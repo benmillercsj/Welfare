@@ -1,0 +1,134 @@
+# Clear global environment
+
+rm(list = ls())
+
+# Load packages and set working directories
+
+library(ggplot2)
+library(stringr)
+library(readr)
+library(readxl)
+library(tidyr)
+library(dplyr)
+library(janitor)
+library(dataCompareR)
+library(grid)
+library(sf)
+library(ggbreak)
+library(glue)
+library(purrr)
+library(openxlsx)
+library(scales)
+library(ggbeeswarm)
+
+# Load in functions
+
+setwd("C:/Users/BenMiller/OneDrive - Centre for Social Justice/Documents/repos/welfare/functions")
+source("theme_csj.R")
+
+'%!in%' = Negate("%in%")
+
+# Set wd and paths
+
+setwd("C:/Users/BenMiller/OneDrive - Centre for Social Justice/Documents/R/welfare/data")
+import_path <- "C:/Users/BenMiller/OneDrive - Centre for Social Justice/Documents/R/welfare/data/import/"
+export_path <- "C:/Users/BenMiller/OneDrive - Centre for Social Justice/Documents/R/welfare/data/export/"
+
+# Tax loss calculation
+
+income_tax_allowance <- 12571
+income_tax_rate <- 0.2
+ni_allowance <- 1048*12
+ni_rate <- 0.08
+minimum_wage <- 12.21*36.5*52
+employer_ni_allowance <- 417*12
+monthly_probability <- 0.01
+
+# NPV function
+
+## Testing
+# name <- "FN Inputs"
+# start_age <- 25
+# counterfactual_wage <- minimum_wage
+# discount_rate <- 0.035
+# inflation_rate <- 0.02
+# uc_standard_input <- 4802
+# lcwra_input <- 5079
+# housing_input <- 535*12
+# pip_input <- 110.4*52
+
+
+npv_fn <- function(name, start_age, counterfactual_wage, discount_rate, inflation_rate, uc_standard_input, lcwra_input,
+                   housing_input, pip_input) {
+
+# Define values 
+
+uc_standard <- uc_standard_input
+lcwra <- lcwra_input
+housing <- housing_input
+pip <-  pip_input
+
+wage_name <- str_replace(str_to_sentence(deparse(substitute(counterfactual_wage))), "_", " ")
+
+tax_loss <- (counterfactual_wage - income_tax_allowance)*0.2 +
+  (counterfactual_wage - ni_allowance)*0.08 +
+  (counterfactual_wage - employer_ni_allowance)*(3/17)
+  
+
+# Probability df 
+
+years <-  tibble(year = seq(1, (67-1-start_age), 1))
+
+yearly_stay_rate <- tibble(stay_probability = c(0.92, 0.96, 0.98, 0.99, rep(0.99, 37)))
+
+build <- years %>% 
+  bind_cols(cumprod(yearly_stay_rate)) %>% 
+  bind_rows(tibble(year = 0, stay_probability = 1)) %>%
+  arrange(year) %>% 
+  mutate(inflation_multiplier = (1 + inflation_rate)^year,
+         discount_rate = (1/((1+discount_rate)^year)),
+         total_loss_benefits_adj = (uc_standard + lcwra + housing + pip)*inflation_multiplier*stay_probability*discount_rate,
+         total_loss_work_adj = (tax_loss)*inflation_multiplier*stay_probability*discount_rate,
+         total_loss_adj = (uc_standard + lcwra + housing + pip + tax_loss)*inflation_multiplier*stay_probability*discount_rate,
+         cumulative = cumsum(total_loss_adj),
+         age = year+25)
+
+total_cost <- build %>% 
+  summarise(estimated_lifetime_cost = sum(total_loss_adj)) %>% 
+  transmute(name = name,
+            start_age = start_age,
+            counterfactual_wage = wage_name,
+            discount_rate = discount_rate,
+            inflation_rate = inflation_rate,
+            lcwra = lcwra,
+            housing = housing,
+            pip = pip,
+            estimated_lifetime_cost)
+
+}
+
+bm_costs <- npv_fn(name = "BM Inputs", start_age = 25,
+                   counterfactual_wage = minimum_wage, discount_rate = 0.035, 
+                   inflation_rate = 0.02, uc_standard_input = 4802,
+                   lcwra_input = 5079, housing_input = 6968, pip_input = 7166)
+fn_costs <- npv_fn("FN Inputs", 25, minimum_wage, 0.035, 0.02, 4802, 5079, 535*12, 110.4*52)
+fn_costs_2_disc <- npv_fn("FN Inputs, 2% discount", 25, minimum_wage, 0.02, 0.02, 4802, 5079, 535*12, 110.4*52)
+bm_costs_part_time <- npv_fn("BM Inputs, half-time work", 25, minimum_wage*0.5, 0.035, 0.02, 4802, 5079, 6968, 7166)
+
+sensitivities <- bind_rows(bm_costs, fn_costs, fn_costs_2_disc, bm_costs_part_time)
+
+
+# Testing 
+
+test <- (minimum_wage - income_tax_allowance)*0.2 +
+  (minimum_wage - ni_allowance)*0.08 +
+  (minimum_wage - employer_ni_allowance)*(3/17)
+
+years_t <-  tibble(year = seq(1, (67-1-25), 1))
+
+yearly_stay_rate_t <- tibble(stay_probability = c(0.92, 0.96, 0.98, 0.99, rep(0.99, 37)))
+
+build_t <- years_t %>% 
+  bind_cols(cumprod(yearly_stay_rate_t)) %>% 
+  mutate(year = year + 25)
+  

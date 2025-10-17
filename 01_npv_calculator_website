@@ -1,0 +1,96 @@
+# Clear global environment
+
+rm(list = ls())
+
+# Load packages and set working directories
+
+library(ggplot2)
+library(stringr)
+library(readr)
+library(readxl)
+library(tidyr)
+library(dplyr)
+library(janitor)
+library(dataCompareR)
+library(grid)
+library(sf)
+library(ggbreak)
+library(glue)
+library(purrr)
+library(openxlsx)
+library(shiny)
+library(ggplot2)
+library(DT)  
+
+# Load in functions
+
+setwd("C:/Users/BenMiller/OneDrive - Centre for Social Justice/Documents/repos/welfare/functions")
+source("theme_csj.R")
+
+'%!in%' = Negate("%in%")
+
+# Set wd and paths
+
+setwd("C:/Users/BenMiller/OneDrive - Centre for Social Justice/Documents/R/welfare/data")
+import_path <- "C:/Users/BenMiller/OneDrive - Centre for Social Justice/Documents/R/welfare/data/import/"
+export_path <- "C:/Users/BenMiller/OneDrive - Centre for Social Justice/Documents/R/welfare/data/export/"
+
+# Import data
+
+stacked <- read_excel(str_c(export_path, "Stacked by year.xlsx"))
+
+ui <- fluidPage(
+  titlePanel("Lifetime Fiscal Cost Calculator"),
+  
+  sidebarLayout(
+    sidebarPanel(
+      # Dropdown 1 for histogram variable
+      selectInput("var1", "Choose variable for Histogram:",
+                  choices = names(mtcars), selected = "mpg"),
+      
+      # Dropdown 2 for scatterplot variables
+      selectInput("xvar", "X-axis variable:", choices = names(mtcars), selected = "wt"),
+      selectInput("yvar", "Y-axis variable:", choices = names(mtcars), selected = "mpg"),
+      
+      # Dropdown 3 for data table filtering
+      selectInput("cyl", "Number of cylinders:", choices = c("All", sort(unique(mtcars$cyl))))
+    ),
+    
+    mainPanel(
+      tabsetPanel(
+        tabPanel("Histogram", plotOutput("histPlot")),
+        tabPanel("Scatterplot", plotOutput("scatterPlot")),
+        tabPanel("Data Table", DTOutput("dataTable"))
+      )
+    )
+  )
+)
+
+server <- function(input, output) {
+  
+  # Histogram
+  output$histPlot <- renderPlot({
+    x <- mtcars[[input$var1]]
+    hist(x, main = paste("Histogram of", input$var1),
+         xlab = input$var1, col = "skyblue", border = "white")
+  })
+  
+  # Scatterplot
+  output$scatterPlot <- renderPlot({
+    ggplot(mtcars, aes_string(x = input$xvar, y = input$yvar)) +
+      geom_point(color = "steelblue", size = 3) +
+      geom_smooth(method = "lm", se = FALSE, color = "red") +
+      labs(title = paste("Scatterplot of", input$yvar, "vs", input$xvar))
+  })
+  
+  # Data table (filtered by cylinder selection)
+  output$dataTable <- renderDT({
+    data <- stacked
+    if (input$cyl != "All") {
+      data <- subset(data, cyl == as.numeric(input$cyl))
+    }
+    datatable(data, options = list(pageLength = 5))
+  })
+}
+
+shinyApp(ui, server)

@@ -22,10 +22,12 @@ library(shiny)
 library(ggplot2)
 library(DT) 
 library(rsconnect)
+library(scales)
 
 # Load in functions
 
 '%!in%' = Negate("%in%")
+pound_format <- label_number(prefix = "£", big.mark = ",", accuracy = 1)
 
 # Import data
 
@@ -51,10 +53,10 @@ ui <- fluidPage(
                   choices = unique(stacked_totals$housing_input), selected = 6968),
       
       selectInput("pip_input", "Annual PIP (£s):",
-                  choices = unique(stacked_totals$pip_input), selected = 7166),
+                  choices = unique(stacked_totals$pip_input), selected = "Basic pip"),
       
       selectInput("probabilities", "Probabilities (Retention Rates Years 1, 2, 3, 4+):",
-                  choices = unique(stacked_totals$probabilities), selected = "0.89, 0.89, 0.89, 0.89"),
+                  choices = unique(stacked_totals$probabilities), selected = "0.92, 0.96, 0.98, 0.99"),
       
       selectInput("counterfactual_wage", "Counterfactual Salary:",
                   choices = unique(stacked_totals$counterfactual_wage), selected = "Minimum wage"),
@@ -92,7 +94,7 @@ server <- function(input, output) {
                        discount_rate == input$discount_rate,
                        inflation_rate == input$inflation_rate) %>% 
                 transmute(`Total Lifetime Cost Estimate` = paste0("£", format(cumulative_total, big.mark = ",", nsmall = 0))),
-              options = list(pageLength = 5))
+              options = list(pageLength = 1))
   })
   
   # Plot
@@ -110,13 +112,38 @@ server <- function(input, output) {
              select(age,
                     `Cumulative Welfare` = cumulative_benefits,
                     `Cumulative Tax Loss` = cumulative_tax,
-                    `Total` = cumulative_total) %>% 
-             pivot_longer(cols = -age),
+                    `Cumulative Total` = cumulative_total) %>% 
+             pivot_longer(cols = -age) %>% 
+             mutate(name = factor(name, levels = c("Cumulative Tax Loss", "Cumulative Welfare", "Cumulative Total"))),
            aes(x = age, y = value, group = name, colour = name)) +
       geom_point() +
       geom_line() +
-      scale_y_continuous(breaks = pretty_breaks(n = 6)) +
-      labs(x = "", y = "") 
+      scale_y_continuous(breaks = pretty_breaks(n = 6),
+                         labels = label_comma(prefix = "£"),
+                         expand = c(0,0)) +
+      scale_x_continuous(breaks = pretty_breaks(n = 6), expand = c(0,0)) +
+      labs(x = "", y = "") +
+      theme_minimal(base_size = 32/.pt, base_family = "sans") %+replace%
+      theme(
+        text = element_text(colour = "#829298"),
+        plot.title = element_text(size = rel(1.5), colour = "#829298", hjust = 0),
+        plot.subtitle = element_text(size = rel(1), colour = "#829298"),
+        plot.caption = element_text(size = rel(0.8), colour = "#829298"),
+        axis.title = element_text(colour = "#829298"),
+        axis.text = element_text(colour = "#829298"),
+        axis.line = element_line(colour = "#e7ecf0"),
+        axis.line.y = element_blank(),
+        panel.grid.major.y = element_line(colour = "#e7ecf0"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.background = element_rect(fill = "#FFFFFF", colour = NA),
+        plot.background = element_rect(fill = "#FFFFFF", colour = NA),
+        legend.position = "bottom",
+        #legend.margin = margin(t = -20, unit = "pt"),
+        legend.title = element_blank(),
+        legend.background = element_rect(fill = "#FFFFFF", colour = NA)
+      ) +
+      scale_colour_manual(values = c("#829298", "#e0bbbc", "#a12241"))
   })
   
   # Data table
@@ -131,11 +158,12 @@ server <- function(input, output) {
                        counterfactual_wage == input$counterfactual_wage,
                        discount_rate == input$discount_rate,
                        inflation_rate == input$inflation_rate) %>% 
-                select(age, probability,
-                       `Cumulative Welfare` = cumulative_benefits,
-                       `Cumulative Tax Loss` = cumulative_tax,
-                       `Total` = cumulative_total)
-              , options = list(pageLength = 42)) 
+                transmute(Age = age,
+                          `Retention Probability` = str_c(round(100*probability, 2), "%"),
+                          `Cumulative Welfare` = pound_format(cumulative_benefits),
+                          `Cumulative Tax Loss` = pound_format(cumulative_tax),
+                          `Cumulative Total` = pound_format(cumulative_total))
+              , options = list(pageLength = 42))
   })
 }
 

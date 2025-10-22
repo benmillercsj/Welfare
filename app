@@ -35,7 +35,7 @@ stacked_by_year <- read_excel("data/Stacked by year.xlsx")
 stacked_totals <- read_excel("data/Stacked totals.xlsx")
 
 ui <- fluidPage(
-  titlePanel("Lifetime Fiscal Cost Calculator"),
+  titlePanel("Expected Lifetime Fiscal Cost Calculator"),
   
   sidebarLayout(
     sidebarPanel(
@@ -49,11 +49,11 @@ ui <- fluidPage(
       selectInput("lcwra_input", "Annual LCWRA (£s):",
                   choices = unique(stacked_totals$lcwra_input), selected = 5079),
       
-      selectInput("housing_input", "Annual Housing (£s):",
-                  choices = unique(stacked_totals$housing_input), selected = 6968),
+      selectInput("housing_input", "Annual Housing:",
+                  choices = unique(stacked_totals$housing_input), selected = "Average housing benefit (£6,968)"),
       
-      selectInput("pip_input", "Annual PIP (£s):",
-                  choices = unique(stacked_totals$pip_input), selected = "Basic pip"),
+      selectInput("pip_input", "Annual PIP:",
+                  choices = unique(stacked_totals$pip_input), selected = "Basic PIP (£3,843)"),
       
       selectInput("probabilities", "Probabilities (Retention Rates Years 1, 2, 3, 4+):",
                   choices = unique(stacked_totals$probabilities), selected = "0.92, 0.96, 0.98, 0.99"),
@@ -66,11 +66,14 @@ ui <- fluidPage(
       
       selectInput("inflation_rate", "Inflation Rate:",
                   choices = unique(stacked_totals$inflation_rate), selected = 0.02),
+      
+      selectInput("entitlement_in_work", "In-work entitlement:",
+                  choices = unique(stacked_totals$entitlement_in_work), selected = 0.02),
     ),
     
     mainPanel(
       tabsetPanel(
-        tabPanel("Total Lifetime Cost", DTOutput("total_cost")),
+        tabPanel("Expected Lifetime Cost", DTOutput("total_cost")),
         tabPanel("Plot", plotOutput("plot")),
         tabPanel("Costs by Year", DTOutput("cost_by_year"))
       )
@@ -92,8 +95,9 @@ server <- function(input, output) {
                        probabilities == input$probabilities,
                        counterfactual_wage == input$counterfactual_wage,
                        discount_rate == input$discount_rate,
-                       inflation_rate == input$inflation_rate) %>% 
-                transmute(`Total Lifetime Cost Estimate` = paste0("£", format(cumulative_total, big.mark = ",", nsmall = 0))),
+                       inflation_rate == input$inflation_rate,
+                       entitlement_in_work == input$entitlement_in_work) %>% 
+                transmute(`Expected Lifetime Cost` = paste0("£", format(cumulative_total, big.mark = ",", nsmall = 0))),
               options = list(pageLength = 1))
   })
   
@@ -108,7 +112,8 @@ server <- function(input, output) {
                     probabilities == input$probabilities,
                     counterfactual_wage == input$counterfactual_wage,
                     discount_rate == input$discount_rate,
-                    inflation_rate == input$inflation_rate) %>% 
+                    inflation_rate == input$inflation_rate,
+                    entitlement_in_work == input$entitlement_in_work) %>% 
              select(age,
                     `Cumulative Welfare` = cumulative_benefits,
                     `Cumulative Tax Loss` = cumulative_tax,
@@ -157,11 +162,13 @@ server <- function(input, output) {
                        probabilities == input$probabilities,
                        counterfactual_wage == input$counterfactual_wage,
                        discount_rate == input$discount_rate,
-                       inflation_rate == input$inflation_rate) %>% 
+                       inflation_rate == input$inflation_rate,
+                       entitlement_in_work == input$entitlement_in_work) %>% 
                 transmute(Age = age,
                           `Retention Probability` = str_c(round(100*probability, 2), "%"),
                           `Cumulative Welfare` = pound_format(cumulative_benefits),
                           `Cumulative Tax Loss` = pound_format(cumulative_tax),
+                          `Cumulative In-Work Welfare` = pound_format(cumulative_in_work_benefit),
                           `Cumulative Total` = pound_format(cumulative_total))
               , options = list(pageLength = 42))
   })

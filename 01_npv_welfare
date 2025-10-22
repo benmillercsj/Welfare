@@ -32,23 +32,30 @@ source("theme_csj.R")
 
 setwd("C:/Users/BenMiller/OneDrive - Centre for Social Justice/Documents/R/welfare/data")
 import_path <- "C:/Users/BenMiller/OneDrive - Centre for Social Justice/Documents/R/welfare/data/import/"
-export_path <- "C:/Users/BenMiller/OneDrive - Centre for Social Justice/Documents/R/welfare/data/export/"
+export_path <- "C:/Users/BenMiller/OneDrive - Centre for Social Justice/Documents/repos/welfare/Lifetime Fiscal Cost Calculator/data/"
 
-# Tax loss calculation
+# Set objects
 
 income_tax_allowance <- 12571
 income_tax_rate <- 0.2
 ni_allowance <- 1048*12
 ni_rate <- 0.08
 minimum_wage <- 12.21*36.5*52
+half_minimum_wage <- 12.21*36.5*52*0.5
 employer_ni_allowance <- 417*12
 monthly_probability <- 0.01
+disabled_median_salary <- 13.69*32.5*52
+half_disabled_median_salary <- 13.69*32.5*52*0.5
+average_pip <- 7166
+basic_pip <- 73.9*52
+enhanced_pip <- 110.4*52
 
 # NPV function
 
-## Testing
+# ## Testing
 # name <- "FN Inputs"
 # start_age <- 25
+# probabilities <- c(0.99^12, 0.99^12, 0.99^12, 0.99^12)
 # counterfactual_wage <- minimum_wage
 # discount_rate <- 0.035
 # inflation_rate <- 0.02
@@ -57,65 +64,95 @@ monthly_probability <- 0.01
 # housing_input <- 535*12
 # pip_input <- 110.4*52
 
+#counterfactual_wage <- "minimum_wage"
 
-npv_fn <- function(name, start_age, counterfactual_wage, discount_rate, inflation_rate, uc_standard_input, lcwra_input,
-                   housing_input, pip_input) {
+npv_fn <- function(start_age,
+                   probabilities,
+                   counterfactual_wage,
+                   discount_rate, inflation_rate,
+                   uc_standard_input, lcwra_input, housing_input, pip_input) {
 
 # Define values 
+  
+wage <- get(counterfactual_wage)
+wage_name <- str_replace_all(str_to_sentence(counterfactual_wage), "_", " ")
 
-uc_standard <- uc_standard_input
-lcwra <- lcwra_input
-housing <- housing_input
-pip <-  pip_input
+pip <- get(pip_input)
+pip_name <- str_c(str_to_sentence(str_extract(pip_input, "^[^_]+")), " PIP")
 
-wage_name <- str_replace(str_to_sentence(deparse(substitute(counterfactual_wage))), "_", " ")
+# Calculate tax loss
 
-tax_loss <- (counterfactual_wage - income_tax_allowance)*0.2 +
-  (counterfactual_wage - ni_allowance)*0.08 +
-  (counterfactual_wage - employer_ni_allowance)*(3/17)
+tax_loss <- (wage - income_tax_allowance)*0.2 +
+  (wage - ni_allowance)*0.08 +
+  (wage - employer_ni_allowance)*(3/17)
   
 
-# Probability df 
+# Build
 
 years <-  tibble(year = seq(1, (67-1-start_age), 1))
 
-yearly_stay_rate <- tibble(stay_probability = c(0.92, 0.96, 0.98, 0.99, rep(0.99, 37)))
+yearly_stay_rate <- tibble(probability = c(probabilities, rep(probabilities[4], max(years$year) - length(probabilities))))
 
 build <- years %>% 
   bind_cols(cumprod(yearly_stay_rate)) %>% 
-  bind_rows(tibble(year = 0, stay_probability = 1)) %>%
+  bind_rows(tibble(year = 0, probability = 1)) %>%
   arrange(year) %>% 
   mutate(inflation_multiplier = (1 + inflation_rate)^year,
-         discount_rate = (1/((1+discount_rate)^year)),
-         total_loss_benefits_adj = (uc_standard + lcwra + housing + pip)*inflation_multiplier*stay_probability*discount_rate,
-         total_loss_work_adj = (tax_loss)*inflation_multiplier*stay_probability*discount_rate,
-         total_loss_adj = (uc_standard + lcwra + housing + pip + tax_loss)*inflation_multiplier*stay_probability*discount_rate,
-         cumulative = cumsum(total_loss_adj),
-         age = year+25)
-
-total_cost <- build %>% 
-  summarise(estimated_lifetime_cost = sum(total_loss_adj)) %>% 
-  transmute(name = name,
-            start_age = start_age,
-            counterfactual_wage = wage_name,
-            discount_rate = discount_rate,
-            inflation_rate = inflation_rate,
-            lcwra = lcwra,
-            housing = housing,
-            pip = pip,
-            estimated_lifetime_cost)
+         discount = (1/((1+discount_rate)^year)),
+         loss_benefits_adj = (uc_standard_input + lcwra_input + housing_input + pip)*inflation_multiplier*probability*discount,
+         loss_tax_adj = (tax_loss)*inflation_multiplier*probability*discount,
+         total_loss_adj = (uc_standard_input + lcwra_input + housing_input + pip + tax_loss)*inflation_multiplier*probability*discount,
+         cumulative_benefits = cumsum(loss_benefits_adj),
+         cumulative_tax = cumsum(loss_tax_adj),
+         cumulative_total = cumsum(total_loss_adj),
+         age = year+start_age,
+         start_age = start_age,
+         probabilities = str_c(round(probabilities[1], 2), round(probabilities[2], 2), round(probabilities[3], 2), round(probabilities[4], 2), sep = ", "),
+         counterfactual_wage = wage_name,
+         discount_rate = discount_rate,
+         inflation_rate = inflation_rate,
+         uc_standard_input = uc_standard_input,
+         lcwra_input = lcwra_input,
+         housing_input = housing_input,
+         pip_input = pip_name)
 
 }
 
-bm_costs <- npv_fn(name = "BM Inputs", start_age = 25,
-                   counterfactual_wage = minimum_wage, discount_rate = 0.035, 
-                   inflation_rate = 0.02, uc_standard_input = 4802,
-                   lcwra_input = 5079, housing_input = 6968, pip_input = 7166)
-fn_costs <- npv_fn("FN Inputs", 25, minimum_wage, 0.035, 0.02, 4802, 5079, 535*12, 110.4*52)
-fn_costs_2_disc <- npv_fn("FN Inputs, 2% discount", 25, minimum_wage, 0.02, 0.02, 4802, 5079, 535*12, 110.4*52)
-bm_costs_part_time <- npv_fn("BM Inputs, half-time work", 25, minimum_wage*0.5, 0.035, 0.02, 4802, 5079, 6968, 7166)
+inputs <- expand_grid(
+  start_age = seq(25, 60, 5),
+  probabilities = list(c(0.92, 0.96, 0.98, 0.99), c(0.99^12, 0.99^12, 0.99^12, 0.99^12)),
+  counterfactual_wage = c("minimum_wage", "half_minimum_wage", "disabled_median_salary", "half_disabled_median_salary"),
+  discount_rate = c(0.035, 0.02),
+  inflation_rate = c(0.02),
+  uc_standard_input = c(4802),
+  lcwra_input = c(5079),
+  housing_input = c(6968),
+  pip_input = c("basic_pip", "enhanced_pip")
+)
 
-sensitivities <- bind_rows(bm_costs, fn_costs, fn_costs_2_disc, bm_costs_part_time)
+stacked <- pmap_dfr(inputs, npv_fn)
+
+write.xlsx(stacked, str_c(export_path, "Stacked by year.xlsx"))
+
+# Summarise total costs
+
+total_costs_stacked <- stacked %>%
+    group_by(start_age,
+    probabilities,
+    counterfactual_wage,
+    discount_rate, inflation_rate,
+    uc_standard_input, lcwra_input, housing_input, pip_input) %>% 
+  mutate(max_age = max(age)) %>% 
+  ungroup() %>% 
+  filter(age == max_age) %>% 
+  distinct(start_age,
+           probabilities,
+           counterfactual_wage,
+           discount_rate, inflation_rate,
+           uc_standard_input, lcwra_input, housing_input, pip_input,
+           cumulative_total)
+
+write.xlsx(total_costs_stacked, str_c(export_path, "Stacked totals.xlsx"))
 
 
 # Testing 
@@ -131,4 +168,78 @@ yearly_stay_rate_t <- tibble(stay_probability = c(0.92, 0.96, 0.98, 0.99, rep(0.
 build_t <- years_t %>% 
   bind_cols(cumprod(yearly_stay_rate_t)) %>% 
   mutate(year = year + 25)
+
+test_plot <-  ggplot(stacked %>% 
+                     filter(start_age == 25,
+                            uc_standard_input == 4802,
+                            lcwra_input == 5079,
+                            housing_input == 6968,
+                            pip_input == 7166,
+                            probabilities == "0.89, 0.89, 0.89, 0.89",
+                            counterfactual_wage == "Minimum wage",
+                            discount_rate == 0.035,
+                            inflation_rate == 0.02) %>% 
+                     select(age,
+                            `Cumulative Welfare` = cumulative_benefits,
+                            `Cumulative Tax Loss` = cumulative_tax,
+                            `Total` = cumulative_total) %>% 
+                     pivot_longer(cols = -age),
+                   aes(x = age, y = value, group = name, colour = name)) +
+  geom_point() +
+  geom_line() +
+  scale_y_continuous(breaks = pretty_breaks(n = 6)) +
+labs(x = "", y = "") 
+
+test_plot
   
+
+# Old manual inputs 
+
+# bm_costs <- npv_fn(name = "BM Inputs", start_age = 25, probabilities = c(0.92, 0.96, 0.98, 0.99),
+#                    counterfactual_wage = minimum_wage, discount_rate = 0.035, 
+#                    inflation_rate = 0.02, uc_standard_input = 4802,
+#                    lcwra_input = 5079, housing_input = 6968, pip_input = 7166)
+# fn_costs <- npv_fn("FN Inputs", 25, 
+#                    c(0.92, 0.96, 0.98, 0.99),
+#                    minimum_wage, 0.035, 0.02, 4802, 5079, 535*12, 110.4*52)
+
+# inputs <- tibble(
+#   name = c("Base, Basic PIP", "Enhanced PIP"),
+#   start_age = c(25, 25, 25),
+#   probabilities = list(c(0.92, 0.96, 0.98, 0.99), c(0.92, 0.96, 0.98, 0.99)),
+#   counterfactual_wage = c("minimum_wage", "half_minimum_wage", "disabled_median_salary", "half_disabled_median_salary"),
+#   discount_rate = c(0.035, 0.035),
+#   inflation_rate = c(0.02, 0.02),
+#   uc_standard_input = c(4802, 4802),
+#   lcwra_input = c(5079, 5079),
+#   housing_input = c(6968, 6968),
+#   pip_input = c("basic_pip", "enhanced_pip")
+# )
+
+# fn_costs_2disc <- npv_fn("FN Inputs, 2% discount", 25,
+#                          c(0.92, 0.96, 0.98, 0.99),
+#                          minimum_wage, 0.02, 0.02, 4802, 5079, 535*12, 110.4*52)
+# bm_costs_part_time <- npv_fn("BM Inputs, half-time work", 25,
+#                              c(0.92, 0.96, 0.98, 0.99),
+#                              minimum_wage*0.5, 0.035, 0.02, 4802, 5079, 6968, 7166)
+# bm_costs_month_probs <- npv_fn("BM Inputs, 1% per month", 25,
+#                                probabilities = c(0.99^12, 0.99^12, 0.99^12, 0.99^12),
+#                                minimum_wage, 0.035, 0.02, 4802, 5079, 6968, 7166)
+# bm_costs_month_probs_part_time <- npv_fn("BM Inputs, 1% per month, half-time work", 25,
+#                                          probabilities = c(0.99^12, 0.99^12, 0.99^12, 0.99^12),
+#                                          minimum_wage*0.5, 0.035, 0.02, 4802, 5079, 6968, 7166)
+# bm_costs_month_probs_part_time_2disc <- npv_fn("BM Inputs, 1% per month, half-time work, 2% disc", 25,
+#                                                probabilities = c(0.99^12, 0.99^12, 0.99^12, 0.99^12),
+#                                                minimum_wage*0.5, 0.02, 0.02, 4802, 5079, 6968, 7166)
+# bm_costs_month_probs_part_time_4.5disc <- npv_fn("BM Inputs, 1% per month, half-time work, gov bond disc", 25,
+#                                                  probabilities = c(0.99^12, 0.99^12, 0.99^12, 0.99^12),
+#                                                  minimum_wage*0.5, 0.045, 0.02, 4802, 5079, 6968, 7166)
+# bm_costs_month_probs_disabledsal <- npv_fn("BM Inputs, 1% per month, median disabled salary", 25,
+#                                            probabilities = c(0.99^12, 0.99^12, 0.99^12, 0.99^12),
+#                                            disabled_median_salary, 0.035, 0.02, 4802, 5079, 6968, average_pip)
+# 
+# 
+# stacked <- bind_rows(bm_costs, fn_costs, fn_costs_2disc,
+#                      bm_costs_part_time, bm_costs_month_probs, bm_costs_month_probs_part_time, 
+#                      bm_costs_month_probs_part_time_2disc, bm_costs_month_probs_part_time_4.5disc,
+#                      bm_costs_month_probs_disabledsal)

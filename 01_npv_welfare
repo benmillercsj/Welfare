@@ -27,6 +27,7 @@ setwd("C:/Users/BenMiller/OneDrive - Centre for Social Justice/Documents/repos/w
 source("theme_csj.R")
 
 '%!in%' = Negate("%in%")
+pound_format <- label_number(prefix = "£", big.mark = ",", accuracy = 1)
 
 # Set wd and paths
 
@@ -44,11 +45,14 @@ minimum_wage <- 12.21*36.5*52
 half_minimum_wage <- 12.21*36.5*52*0.5
 employer_ni_allowance <- 417*12
 monthly_probability <- 0.01
-disabled_median_salary <- 13.69*32.5*52
-half_disabled_median_salary <- 13.69*32.5*52*0.5
+disabled_median_salary <- 13.69*32.5*52 # Disabled workers work on average 4 hours less per week
+half_disabled_median_salary <- 13.69*32.5*52*0.5 # Disabled workers work on average 4 hours less per week
 average_pip <- 7166
+no_pip <- 0
 basic_pip <- 73.9*52
 enhanced_pip <- 110.4*52
+average_housing_benefit <- 6968
+no_housing_benefit <- 0
 
 # NPV function
 
@@ -78,14 +82,20 @@ wage <- get(counterfactual_wage)
 wage_name <- str_replace_all(str_to_sentence(counterfactual_wage), "_", " ")
 
 pip <- get(pip_input)
-pip_name <- str_c(str_to_sentence(str_extract(pip_input, "^[^_]+")), " PIP")
+pip_name <- str_c(str_to_sentence(str_extract(pip_input, "^[^_]+")), " PIP", " (", pound_format(pip), ")")
 
-# Calculate tax loss
+housing <- get(housing_input)
+housing_name <- str_c(str_replace_all(str_to_sentence(housing_input), "_", " "), " (", pound_format(housing), ")")
+
+# Calculate tax loss - depends on if have disability and housing
+
+# allowance
+# 
+# remaining_benefits <- work_allowance + wage*0.45
 
 tax_loss <- (wage - income_tax_allowance)*0.2 +
   (wage - ni_allowance)*0.08 +
   (wage - employer_ni_allowance)*(3/17)
-  
 
 # Build
 
@@ -99,9 +109,9 @@ build <- years %>%
   arrange(year) %>% 
   mutate(inflation_multiplier = (1 + inflation_rate)^year,
          discount = (1/((1+discount_rate)^year)),
-         loss_benefits_adj = (uc_standard_input + lcwra_input + housing_input + pip)*inflation_multiplier*probability*discount,
+         loss_benefits_adj = (uc_standard_input + lcwra_input + housing + pip)*inflation_multiplier*probability*discount,
          loss_tax_adj = (tax_loss)*inflation_multiplier*probability*discount,
-         total_loss_adj = (uc_standard_input + lcwra_input + housing_input + pip + tax_loss)*inflation_multiplier*probability*discount,
+         total_loss_adj = (uc_standard_input + lcwra_input + housing + pip + tax_loss)*inflation_multiplier*probability*discount,
          cumulative_benefits = cumsum(loss_benefits_adj),
          cumulative_tax = cumsum(loss_tax_adj),
          cumulative_total = cumsum(total_loss_adj),
@@ -113,21 +123,21 @@ build <- years %>%
          inflation_rate = inflation_rate,
          uc_standard_input = uc_standard_input,
          lcwra_input = lcwra_input,
-         housing_input = housing_input,
+         housing_input = housing_name,
          pip_input = pip_name)
 
 }
 
 inputs <- expand_grid(
-  start_age = seq(25, 60, 5),
+  start_age = c(seq(25, 60, 5)),
   probabilities = list(c(0.92, 0.96, 0.98, 0.99), c(0.99^12, 0.99^12, 0.99^12, 0.99^12)),
   counterfactual_wage = c("minimum_wage", "half_minimum_wage", "disabled_median_salary", "half_disabled_median_salary"),
   discount_rate = c(0.035, 0.02),
   inflation_rate = c(0.02),
   uc_standard_input = c(4802),
   lcwra_input = c(5079),
-  housing_input = c(6968),
-  pip_input = c("basic_pip", "enhanced_pip")
+  housing_input = c("no_housing_benefit", "average_housing_benefit"),
+  pip_input = c("no_pip", "basic_pip", "enhanced_pip")
 )
 
 stacked <- pmap_dfr(inputs, npv_fn)

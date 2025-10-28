@@ -43,14 +43,11 @@ ui <- fluidPage(
       selectInput("start_age", "Age of Entry:",
                   choices = unique(stacked_totals$start_age), selected = 25),
       
-      selectInput("uc_standard_input", "Annual Standard UC (£s):",
-                  choices = unique(stacked_totals$uc_standard_input), selected = 4802),
-      
-      selectInput("lcwra_input", "Annual LCWRA (£s):",
-                  choices = unique(stacked_totals$lcwra_input), selected = 5079),
+      selectInput("lcw_input", "LCW/LCWRA:",
+                  choices = unique(stacked_totals$lcw_input), selected = "LCWRA"),
       
       selectInput("housing_input", "Annual Housing:",
-                  choices = unique(stacked_totals$housing_input), selected = "Average housing benefit (£6,968)"),
+                  choices = unique(stacked_totals$housing_input), selected = "Average housing allowance (£5,048)"),
       
       selectInput("pip_input", "Annual PIP:",
                   choices = unique(stacked_totals$pip_input), selected = "Basic PIP (£3,843)"),
@@ -61,14 +58,8 @@ ui <- fluidPage(
       selectInput("counterfactual_wage", "Counterfactual Salary:",
                   choices = unique(stacked_totals$counterfactual_wage), selected = "Minimum wage"),
       
-      selectInput("discount_rate", "Discount Rate:",
-                  choices = unique(stacked_totals$discount_rate), selected = 0.035),
-      
-      selectInput("inflation_rate", "Inflation Rate:",
-                  choices = unique(stacked_totals$inflation_rate), selected = 0.02),
-      
       selectInput("entitlement_in_work", "In-work entitlement:",
-                  choices = unique(stacked_totals$entitlement_in_work), selected = 0.02),
+                  choices = unique(stacked_totals$entitlement_in_work), selected = "No in-work entitlement"),
     ),
     
     mainPanel(
@@ -88,14 +79,11 @@ server <- function(input, output) {
   output$total_cost <- renderDT({
     datatable(stacked_totals %>% 
                 filter(start_age == input$start_age,
-                       uc_standard_input == input$uc_standard_input,
-                       lcwra_input == input$lcwra_input,
+                       lcw_input == input$lcw_input,
                        housing_input == input$housing_input,
                        pip_input == input$pip_input,
                        probabilities == input$probabilities,
                        counterfactual_wage == input$counterfactual_wage,
-                       discount_rate == input$discount_rate,
-                       inflation_rate == input$inflation_rate,
                        entitlement_in_work == input$entitlement_in_work) %>% 
                 transmute(`Expected Lifetime Cost` = paste0("£", format(cumulative_total, big.mark = ",", nsmall = 0))),
               options = list(pageLength = 1))
@@ -105,14 +93,11 @@ server <- function(input, output) {
   output$plot <- renderPlot({
     ggplot(stacked_by_year %>% 
              filter(start_age == input$start_age,
-                    uc_standard_input == input$uc_standard_input,
-                    lcwra_input == input$lcwra_input,
+                    lcw_input == input$lcw_input,
                     housing_input == input$housing_input,
                     pip_input == input$pip_input,
                     probabilities == input$probabilities,
                     counterfactual_wage == input$counterfactual_wage,
-                    discount_rate == input$discount_rate,
-                    inflation_rate == input$inflation_rate,
                     entitlement_in_work == input$entitlement_in_work) %>% 
              select(age,
                     `Cumulative Welfare` = cumulative_benefits,
@@ -155,20 +140,18 @@ server <- function(input, output) {
   output$cost_by_year <- renderDT({
     datatable(stacked_by_year %>% 
                 filter(start_age == input$start_age,
-                       uc_standard_input == input$uc_standard_input,
-                       lcwra_input == input$lcwra_input,
+                       lcw_input == input$lcw_input,
                        housing_input == input$housing_input,
                        pip_input == input$pip_input,
                        probabilities == input$probabilities,
                        counterfactual_wage == input$counterfactual_wage,
-                       discount_rate == input$discount_rate,
-                       inflation_rate == input$inflation_rate,
                        entitlement_in_work == input$entitlement_in_work) %>% 
                 transmute(Age = age,
                           `Retention Probability` = str_c(round(100*probability, 2), "%"),
                           `Cumulative Welfare` = pound_format(cumulative_benefits),
                           `Cumulative Tax Loss` = pound_format(cumulative_tax),
                           `Cumulative In-Work Welfare` = pound_format(cumulative_in_work_benefit),
+                          `Cumulative Tax Loss Net In-Work Welfare` = pound_format(cumulative_tax_loss_net_in_work_benefit),
                           `Cumulative Total` = pound_format(cumulative_total))
               , options = list(pageLength = 42))
   })

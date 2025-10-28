@@ -35,16 +35,24 @@ setwd("C:/Users/BenMiller/OneDrive - Centre for Social Justice/Documents/R/welfa
 import_path <- "C:/Users/BenMiller/OneDrive - Centre for Social Justice/Documents/R/welfare/data/import/"
 export_path <- "C:/Users/BenMiller/OneDrive - Centre for Social Justice/Documents/repos/welfare/Lifetime Fiscal Cost Calculator/data/"
 
+# Import housing costs
+
+england_housing_allowances <- read_csv(str_c(import_path, "England Housing Allowance Rates.csv"), skip = 1) %>% 
+  clean_names() %>% 
+  mutate(across(-brma, ~as.numeric(.)))
+
 # Set objects
 
 income_tax_allowance <- 12571
 income_tax_rate <- 0.2
 ni_allowance <- 1048*12
 ni_rate <- 0.08
+employer_ni_allowance <- 417*12
 minimum_wage <- 12.21*36.5*52
 half_minimum_wage <- 12.21*36.5*52*0.5
-employer_ni_allowance <- 417*12
-monthly_probability <- 0.01
+uc_standard <- 400.14*12
+lcw <- 158.76*12
+lcwra <- 423.27*12
 disabled_median_salary <- 13.69*32.5*52 # 2023. Disabled workers work on average 4 hours less per week
 half_disabled_median_salary <- 13.69*32.5*52*0.5 # 2023.  Disabled workers work on average 4 hours less per week
 median_annual_salary <- 37430 # April 2024
@@ -52,8 +60,10 @@ average_pip <- 7166
 no_pip <- 0
 basic_pip <- 73.9*52
 enhanced_pip <- 110.4*52
-average_housing_benefit <- 6968
-no_housing_benefit <- 0
+average_housing_allowance <- (england_housing_allowances %>% summarise(mean = mean(sar)) %>% pull())*12
+average_non_london_housing_allowance <- (england_housing_allowances %>% filter(!str_detect(brma, "London")) %>% summarise(mean = mean(sar)) %>% pull())*12
+average_london_housing_allowance <- (england_housing_allowances %>% filter(str_detect(brma, "London")) %>% summarise(mean = mean(sar)) %>% pull())*12
+no_housing_allowance <- 0
 
 # NPV function
 
@@ -74,8 +84,7 @@ no_housing_benefit <- 0
 npv_fn <- function(start_age,
                    probabilities,
                    counterfactual_wage,
-                   discount_rate, inflation_rate,
-                   uc_standard_input, lcwra_input, housing_input, pip_input,
+                   lcw_input, housing_input, pip_input,
                    entitlement_in_work) {
 
 # Define values 
@@ -83,15 +92,20 @@ npv_fn <- function(start_age,
 wage <- get(counterfactual_wage)
 wage_name <- str_replace_all(str_to_sentence(counterfactual_wage), "_", " ")
 
+lcw <- get(lcw_input)
+lcw_name <- str_to_upper(lcw_input)
+
 pip <- get(pip_input)
 pip_name <- str_c(str_to_sentence(str_extract(pip_input, "^[^_]+")), " PIP", " (", pound_format(pip), ")")
 
 housing <- get(housing_input)
-housing_name <- str_c(str_replace_all(str_to_sentence(housing_input), "_", " "), " (", pound_format(housing), ")")
+housing_name <- str_c(str_replace_all(str_to_sentence(housing_input), "_", " "), " (", pound_format(housing), ")") %>% 
+  ifelse(str_detect(., "london"), str_replace(., "london", "London"), .) %>% 
+  ifelse(str_detect(., "non London"), str_replace(., "non London", "Non-London"), .)
 
 # Calculate tax loss - depends on if have disability and housing
 
-total_benefits <- uc_standard_input + lcwra_input + housing + pip
+total_benefits <- uc_standard + lcw + housing + pip
 
 tax_loss <- (wage - income_tax_allowance)*0.2 +
   (wage - ni_allowance)*0.08 +
@@ -103,32 +117,36 @@ net_wage <- wage - ((wage - income_tax_allowance)*0.2 + (wage - ni_allowance)*0.
 if (entitlement_in_work == "No in-work entitlement") {
   in_work_benefits <- 0
   work_allowance <- 0
-} else if (entitlement_in_work == "Standard UC") {
-  in_work_benefits <- uc_standard_input
+} else if (entitlement_in_work == "UC Standard") {
+  in_work_benefits <- uc_standard
   work_allowance <- 0
-} else if (entitlement_in_work == "Standard UC, LCWRA") {
-  in_work_benefits <- uc_standard_input + lcwra_input
+} else if (entitlement_in_work == "UC Standard, LCWRA") {
+  in_work_benefits <- uc_standard + lcw
   work_allowance <- 0
-} else if (entitlement_in_work == "Standard UC, LCWRA, Housing") {
-  in_work_benefits <- uc_standard_input + lcwra_input + housing
+} else if (entitlement_in_work == "UC Standard, LCWRA, Housing") {
+  in_work_benefits <- uc_standard + lcw + housing
   work_allowance <- 0
-} else if (entitlement_in_work == "Standard UC, LCWRA, Housing, PIP") {
-  in_work_benefits <- uc_standard_input + lcwra_input + housing + pip
+} else if (entitlement_in_work == "UC Standard, LCWRA, Housing, PIP") {
+  in_work_benefits <- uc_standard + lcw + housing + pip
   work_allowance <- 411*12
-} else if (entitlement_in_work == "Standard UC, Housing") {
-  in_work_benefits <- uc_standard_input + housing 
+} else if (entitlement_in_work == "UC Standard, Housing") {
+  in_work_benefits <- uc_standard + housing 
   work_allowance <- 0
-} else if (entitlement_in_work == "Standard UC, PIP") {
-  in_work_benefits <- uc_standard_input + pip
+} else if (entitlement_in_work == "UC Standard, PIP") {
+  in_work_benefits <- uc_standard + pip
   work_allowance <- 684*12
-} else if (entitlement_in_work == "Standard UC, LCWRA, PIP") {
-  in_work_benefits <- uc_standard_input + lcwra_input + pip
+} else if (entitlement_in_work == "UC Standard, LCWRA, PIP") {
+  in_work_benefits <- uc_standard + lcw + pip
   work_allowance <- 684*12
 }
 
 remaining_in_work_benefits <- ifelse(in_work_benefits - (net_wage - work_allowance)*0.55 < 0,
                                      0,
                                      in_work_benefits - (net_wage - work_allowance)*0.55)
+
+tax_loss_net_in_work_benefit <- ifelse(tax_loss - remaining_in_work_benefits < 0,
+                                       0,
+                                       tax_loss - remaining_in_work_benefits)
 
 # Build
 
@@ -140,24 +158,24 @@ build <- years %>%
   bind_cols(cumprod(yearly_stay_rate)) %>% 
   bind_rows(tibble(year = 0, probability = 1)) %>%
   arrange(year) %>% 
-  mutate(inflation_multiplier = (1 + inflation_rate)^year,
-         discount = (1/((1+discount_rate)^year)),
+  mutate(inflation_multiplier = (1 + 0.02)^year,
+         discount_t = ifelse(year <= 30, 0.035, 0.03), 
+         discount = (1/((1+discount_t)^year)),
          loss_benefits_adj = (total_benefits)*inflation_multiplier*probability*discount,
          loss_tax_adj = (tax_loss)*inflation_multiplier*probability*discount,
          in_work_benefits_adj = (remaining_in_work_benefits)*inflation_multiplier*probability*discount,
-         total_loss_adj = (total_benefits + tax_loss - remaining_in_work_benefits)*inflation_multiplier*probability*discount,
+         tax_loss_net_in_work_benefit_adj = (tax_loss_net_in_work_benefit)*inflation_multiplier*probability*discount,
+         total_loss_adj = (total_benefits + tax_loss_net_in_work_benefit)*inflation_multiplier*probability*discount,
          cumulative_benefits = cumsum(loss_benefits_adj),
          cumulative_tax = cumsum(loss_tax_adj),
          cumulative_in_work_benefit = cumsum(in_work_benefits_adj),
+         cumulative_tax_loss_net_in_work_benefit = cumsum(tax_loss_net_in_work_benefit_adj),
          cumulative_total = cumsum(total_loss_adj),
          age = year+start_age,
          start_age = start_age,
          probabilities = str_c(round(probabilities[1], 2), round(probabilities[2], 2), round(probabilities[3], 2), round(probabilities[4], 2), sep = ", "),
          counterfactual_wage = wage_name,
-         discount_rate = discount_rate,
-         inflation_rate = inflation_rate,
-         uc_standard_input = uc_standard_input,
-         lcwra_input = lcwra_input,
+         lcw_input = lcw_name,
          housing_input = housing_name,
          pip_input = pip_name,
          entitlement_in_work = entitlement_in_work)
@@ -168,14 +186,11 @@ inputs <- expand_grid(
   start_age = c(seq(25, 60, 5)),
   probabilities = list(c(0.92, 0.96, 0.98, 0.99), c(0.99^12, 0.99^12, 0.99^12, 0.99^12)),
   counterfactual_wage = c("minimum_wage", "half_minimum_wage", "disabled_median_salary", "half_disabled_median_salary", "median_annual_salary"),
-  discount_rate = c(0.035, 0.02),
-  inflation_rate = c(0.02),
-  uc_standard_input = c(4802),
-  lcwra_input = c(5079),
-  housing_input = c("no_housing_benefit", "average_housing_benefit"),
+  lcw_input = c("lcw", "lcwra"),
+  housing_input = c("no_housing_allowance", "average_housing_allowance", "average_london_housing_allowance", "average_non_london_housing_allowance"),
   pip_input = c("no_pip", "basic_pip", "enhanced_pip"),
-  entitlement_in_work = c("No in-work entitlement", "Standard UC", "Standard UC, LCWRA", "Standard UC, LCWRA, Housing",
-                          "Standard UC, LCWRA, Housing, PIP", "Standard UC, Housing", "Standard UC, PIP", "Standard UC, LCWRA, PIP")
+  entitlement_in_work = c("No in-work entitlement", "UC Standard", "UC Standard, LCWRA", "UC Standard, LCWRA, Housing",
+                          "UC Standard, LCWRA, Housing, PIP", "UC Standard, Housing", "UC Standard, PIP", "UC Standard, LCWRA, PIP")
 )
 
 stacked <- pmap_dfr(inputs, npv_fn)
@@ -188,8 +203,7 @@ total_costs_stacked <- stacked %>%
     group_by(start_age,
     probabilities,
     counterfactual_wage,
-    discount_rate, inflation_rate,
-    uc_standard_input, lcwra_input, housing_input, pip_input,
+    lcw_input, housing_input, pip_input,
     entitlement_in_work) %>% 
   mutate(max_age = max(age)) %>% 
   ungroup() %>% 
@@ -197,8 +211,7 @@ total_costs_stacked <- stacked %>%
   distinct(start_age,
            probabilities,
            counterfactual_wage,
-           discount_rate, inflation_rate,
-           uc_standard_input, lcwra_input, housing_input, pip_input,
+           lcw_input, housing_input, pip_input,
            entitlement_in_work,
            cumulative_total)
 

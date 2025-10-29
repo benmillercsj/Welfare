@@ -20,6 +20,11 @@ library(purrr)
 library(openxlsx)
 library(scales)
 library(ggbeeswarm)
+library(shiny)
+library(ggplot2)
+library(DT) 
+library(rsconnect)
+library(scales)
 
 # Load in functions
 
@@ -49,17 +54,22 @@ ni_allowance <- 1048*12
 ni_rate <- 0.08
 employer_ni_allowance <- 417*12
 minimum_wage <- 12.21*36.5*52
-half_minimum_wage <- 12.21*36.5*52*0.5
+half_time_minimum_wage <- 12.21*36.5*52*0.5
 uc_standard <- 400.14*12
 lcw <- 158.76*12
 lcwra <- 423.27*12
 disabled_median_salary <- 13.69*32.5*52 # 2023. Disabled workers work on average 4 hours less per week
-half_disabled_median_salary <- 13.69*32.5*52*0.5 # 2023.  Disabled workers work on average 4 hours less per week
+half_time_disabled_median_salary <- 13.69*32.5*52*0.5 
 median_annual_salary <- 37430 # April 2024
+half_time_median_annual_salary <- 37430*0.5
 average_pip <- 7166
 no_pip <- 0
-basic_pip <- 73.9*52
-enhanced_pip <- 110.4*52
+basic_pip_with_no_mobility_component <- 73.9*52
+enhanced_pip_with_no_mobility_component <- 110.4*52
+basic_pip_with_basic_mobility_component <- 73.9*52 + 29.20*52
+basic_pip_with_enhanced_mobility_component <- 73.9*52 + 77.05*52
+enhanced_pip_with_basic_mobility_component <- 110.4*52 + 29.20*52
+enhanced_pip_with_enhanced_mobility_component <- 110.4*52+ 77.05*52
 average_housing_allowance <- (england_housing_allowances %>% summarise(mean = mean(sar)) %>% pull())*12
 average_non_london_housing_allowance <- (england_housing_allowances %>% filter(!str_detect(brma, "London")) %>% summarise(mean = mean(sar)) %>% pull())*12
 average_london_housing_allowance <- (england_housing_allowances %>% filter(str_detect(brma, "London")) %>% summarise(mean = mean(sar)) %>% pull())*12
@@ -90,13 +100,13 @@ npv_fn <- function(start_age,
 # Define values 
   
 wage <- get(counterfactual_wage)
-wage_name <- str_replace_all(str_to_sentence(counterfactual_wage), "_", " ")
+wage_name <- str_c(str_replace_all(str_to_sentence(counterfactual_wage), "_", " "), " (", pound_format(wage), ")")
 
 lcw <- get(lcw_input)
-lcw_name <- str_to_upper(lcw_input)
+lcw_name <- str_c(str_to_upper(lcw_input), " (", pound_format(lcw), ")")
 
 pip <- get(pip_input)
-pip_name <- str_c(str_to_sentence(str_extract(pip_input, "^[^_]+")), " PIP", " (", pound_format(pip), ")")
+pip_name <- str_c(str_to_sentence(str_replace_all(pip_input, "_", " ")), " (", pound_format(pip), ")") %>% str_replace(., "pip", "PIP")
 
 housing <- get(housing_input)
 housing_name <- str_c(str_replace_all(str_to_sentence(housing_input), "_", " "), " (", pound_format(housing), ")") %>% 
@@ -120,13 +130,13 @@ if (entitlement_in_work == "No in-work entitlement") {
 } else if (entitlement_in_work == "UC Standard") {
   in_work_benefits <- uc_standard
   work_allowance <- 0
-} else if (entitlement_in_work == "UC Standard, LCWRA") {
+} else if (entitlement_in_work == "UC Standard, LCW(RA)") {
   in_work_benefits <- uc_standard + lcw
   work_allowance <- 0
-} else if (entitlement_in_work == "UC Standard, LCWRA, Housing") {
+} else if (entitlement_in_work == "UC Standard, LCW(RA), Housing") {
   in_work_benefits <- uc_standard + lcw + housing
   work_allowance <- 0
-} else if (entitlement_in_work == "UC Standard, LCWRA, Housing, PIP") {
+} else if (entitlement_in_work == "UC Standard, LCW(RA), Housing, PIP") {
   in_work_benefits <- uc_standard + lcw + housing + pip
   work_allowance <- 411*12
 } else if (entitlement_in_work == "UC Standard, Housing") {
@@ -135,7 +145,7 @@ if (entitlement_in_work == "No in-work entitlement") {
 } else if (entitlement_in_work == "UC Standard, PIP") {
   in_work_benefits <- uc_standard + pip
   work_allowance <- 684*12
-} else if (entitlement_in_work == "UC Standard, LCWRA, PIP") {
+} else if (entitlement_in_work == "UC Standard, LCW(RA), PIP") {
   in_work_benefits <- uc_standard + lcw + pip
   work_allowance <- 684*12
 }
@@ -185,12 +195,12 @@ build <- years %>%
 inputs <- expand_grid(
   start_age = c(seq(25, 60, 5)),
   probabilities = list(c(0.92, 0.96, 0.98, 0.99), c(0.99^12, 0.99^12, 0.99^12, 0.99^12)),
-  counterfactual_wage = c("minimum_wage", "half_minimum_wage", "disabled_median_salary", "half_disabled_median_salary", "median_annual_salary"),
+  counterfactual_wage = c("minimum_wage", "half_time_minimum_wage", "disabled_median_salary", "half_time_disabled_median_salary", "median_annual_salary", "half_time_median_annual_salary"),
   lcw_input = c("lcw", "lcwra"),
   housing_input = c("no_housing_allowance", "average_housing_allowance", "average_london_housing_allowance", "average_non_london_housing_allowance"),
-  pip_input = c("no_pip", "basic_pip", "enhanced_pip"),
-  entitlement_in_work = c("No in-work entitlement", "UC Standard", "UC Standard, LCWRA", "UC Standard, LCWRA, Housing",
-                          "UC Standard, LCWRA, Housing, PIP", "UC Standard, Housing", "UC Standard, PIP", "UC Standard, LCWRA, PIP")
+  pip_input = c("no_pip", "basic_pip_with_no_mobility_component", "enhanced_pip_with_no_mobility_component", "basic_pip_with_basic_mobility_component", "basic_pip_with_enhanced_mobility_component", "enhanced_pip_with_basic_mobility_component", "enhanced_pip_with_enhanced_mobility_component"),
+  entitlement_in_work = c("No in-work entitlement", "UC Standard", "UC Standard, LCW(RA)", "UC Standard, LCW(RA), Housing",
+                          "UC Standard, LCW(RA), Housing, PIP", "UC Standard, Housing", "UC Standard, PIP", "UC Standard, LCW(RA), PIP")
 )
 
 stacked <- pmap_dfr(inputs, npv_fn)

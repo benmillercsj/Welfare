@@ -44,19 +44,19 @@ ui <- fluidPage(
                   choices = unique(stacked_totals$start_age), selected = 25),
       
       selectInput("lcw_input", "LCW/LCWRA:",
-                  choices = unique(stacked_totals$lcw_input), selected = "LCWRA"),
+                  choices = unique(stacked_totals$lcw_input), selected = "LCWRA (£5,079)"),
       
       selectInput("housing_input", "Annual Housing:",
                   choices = unique(stacked_totals$housing_input), selected = "Average housing allowance (£5,048)"),
       
       selectInput("pip_input", "Annual PIP:",
-                  choices = unique(stacked_totals$pip_input), selected = "Basic PIP (£3,843)"),
+                  choices = unique(stacked_totals$pip_input), selected = "Basic PIP with no mobility component (£3,843)"),
       
       selectInput("probabilities", "Probabilities (Retention Rates Years 1, 2, 3, 4+):",
                   choices = unique(stacked_totals$probabilities), selected = "0.92, 0.96, 0.98, 0.99"),
       
       selectInput("counterfactual_wage", "Counterfactual Salary:",
-                  choices = unique(stacked_totals$counterfactual_wage), selected = "Minimum wage"),
+                  choices = unique(stacked_totals$counterfactual_wage), selected = "Minimum wage (£23,175)"),
       
       selectInput("entitlement_in_work", "In-work entitlement:",
                   choices = unique(stacked_totals$entitlement_in_work), selected = "No in-work entitlement"),
@@ -158,4 +158,3 @@ server <- function(input, output) {
 }
 
 shinyApp(ui, server)
-

@@ -46,6 +46,19 @@ england_housing_allowances <- read_csv(str_c(import_path, "England Housing Allow
   clean_names() %>% 
   mutate(across(-brma, ~as.numeric(.)))
 
+# Import wages by age 
+
+median_wage_by_age_import <- read_excel(str_c(import_path, "ASHE, 2025, Earnings by Age.xlsx"), sheet = "Full-Time", skip = 4) %>% 
+  clean_names()
+
+median_wage_by_age <- tibble(age = seq(22, 66, 1)) %>% 
+  left_join(median_wage_by_age_import %>% 
+              slice(4:8) %>% 
+              transmute(age = as.numeric(str_sub(description, 1, 2)),
+                        wage = median)) %>% 
+  fill(wage) %>% 
+  filter(age >= 25)
+
 # Set objects
 
 income_tax_allowance <- 12571
@@ -60,8 +73,8 @@ lcw <- 158.76*12
 lcwra <- 423.27*12
 disabled_median_salary <- 13.69*32.5*52 # 2023. Disabled workers work on average 4 hours less per week
 half_time_disabled_median_salary <- 13.69*32.5*52*0.5 
-median_annual_salary <- 37430 # April 2024
-half_time_median_annual_salary <- 37430*0.5
+median_annual_salary <- 39039 # Full time workers, ASHE 2025
+median_part_time_annual_salary <- 14713 # Part-time workers, ASHE 2025
 average_pip <- 7166
 no_pip <- 0
 basic_pip_with_no_mobility_component <- 73.9*52
@@ -97,9 +110,8 @@ npv_fn <- function(start_age,
                    lcw_input, housing_input, pip_input,
                    entitlement_in_work) {
 
-# Define values 
+# Define values and names
   
-wage <- get(counterfactual_wage)
 wage_name <- str_c(str_replace_all(str_to_sentence(counterfactual_wage), "_", " "), " (", pound_format(wage), ")")
 
 lcw <- get(lcw_input)
@@ -113,16 +125,9 @@ housing_name <- str_c(str_replace_all(str_to_sentence(housing_input), "_", " "),
   ifelse(str_detect(., "london"), str_replace(., "london", "London"), .) %>% 
   ifelse(str_detect(., "non London"), str_replace(., "non London", "Non-London"), .)
 
-# Calculate tax loss - depends on if have disability and housing
-
 total_benefits <- uc_standard + lcw + housing + pip
 
-tax_loss <- (wage - income_tax_allowance)*0.2 +
-  (wage - ni_allowance)*0.08 +
-  (wage - employer_ni_allowance)*(3/17)
-
-net_wage <- wage - ((wage - income_tax_allowance)*0.2 + (wage - ni_allowance)*0.08)
-
+# Define in work benefits and corresponding work allowance
 
 if (entitlement_in_work == "No in-work entitlement") {
   in_work_benefits <- 0
@@ -150,13 +155,27 @@ if (entitlement_in_work == "No in-work entitlement") {
   work_allowance <- 684*12
 }
 
-remaining_in_work_benefits <- ifelse(in_work_benefits - (net_wage - work_allowance)*0.55 < 0,
-                                     0,
-                                     in_work_benefits - (net_wage - work_allowance)*0.55)
+# Create df of ages and wages
 
-tax_loss_net_in_work_benefit <- ifelse(tax_loss - remaining_in_work_benefits < 0,
-                                       0,
-                                       tax_loss - remaining_in_work_benefits)
+if (counterfactual_wage != "median_wage_by_age") {
+  wage_value <- get(counterfactual_wage)
+  wage_name <- str_c(str_replace_all(str_to_sentence(counterfactual_wage), "_", " "), " (", pound_format(wage), ")")
+  wage_df <- tibble(age = seq(25, 66, 1)) %>% 
+    mutate(wage = wage_value)
+} else {
+  wage_name <- "Median Wage by Age Group"
+  wage_df <- median_wage_by_age
+}
+
+wages_and_losses <- wage_df %>% 
+  mutate(tax_loss = (wage - income_tax_allowance)*0.2 + (wage - ni_allowance)*0.08 + (wage - employer_ni_allowance)*(3/17),
+         net_wage = wage - ((wage - income_tax_allowance)*0.2 + (wage - ni_allowance)*0.08),
+         remaining_in_work_benefits = ifelse(in_work_benefits - (net_wage - work_allowance)*0.55 < 0,
+                                              0,
+                                              in_work_benefits - (net_wage - work_allowance)*0.55),
+         tax_loss_net_in_work_benefit = ifelse(tax_loss - remaining_in_work_benefits < 0,
+                                                0,
+                                                tax_loss - remaining_in_work_benefits))
 
 # Build
 
@@ -168,6 +187,9 @@ build <- years %>%
   bind_cols(cumprod(yearly_stay_rate)) %>% 
   bind_rows(tibble(year = 0, probability = 1)) %>%
   arrange(year) %>% 
+  mutate(start_age = start_age,
+         age = year + start_age) %>% 
+  left_join(wages_and_losses) %>% 
   mutate(inflation_multiplier = (1 + 0.02)^year,
          discount_t = ifelse(year <= 30, 0.035, 0.03), 
          discount = (1/((1+discount_t)^year)),
@@ -181,8 +203,6 @@ build <- years %>%
          cumulative_in_work_benefit = cumsum(in_work_benefits_adj),
          cumulative_tax_loss_net_in_work_benefit = cumsum(tax_loss_net_in_work_benefit_adj),
          cumulative_total = cumsum(total_loss_adj),
-         age = year+start_age,
-         start_age = start_age,
          probabilities = str_c(round(probabilities[1], 2), round(probabilities[2], 2), round(probabilities[3], 2), round(probabilities[4], 2), sep = ", "),
          counterfactual_wage = wage_name,
          lcw_input = lcw_name,
@@ -195,7 +215,8 @@ build <- years %>%
 inputs <- expand_grid(
   start_age = c(seq(25, 60, 5)),
   probabilities = list(c(0.92, 0.96, 0.98, 0.99), c(0.99^12, 0.99^12, 0.99^12, 0.99^12)),
-  counterfactual_wage = c("minimum_wage", "half_time_minimum_wage", "disabled_median_salary", "half_time_disabled_median_salary", "median_annual_salary", "half_time_median_annual_salary"),
+  counterfactual_wage = c("minimum_wage", "half_time_minimum_wage", "disabled_median_salary", "half_time_disabled_median_salary",
+                          "median_annual_salary", "median_part_time_annual_salary", "median_wage_by_age"),
   lcw_input = c("lcw", "lcwra"),
   housing_input = c("no_housing_allowance", "average_housing_allowance", "average_london_housing_allowance", "average_non_london_housing_allowance"),
   pip_input = c("no_pip", "basic_pip_with_no_mobility_component", "enhanced_pip_with_no_mobility_component", "basic_pip_with_basic_mobility_component", "basic_pip_with_enhanced_mobility_component", "enhanced_pip_with_basic_mobility_component", "enhanced_pip_with_enhanced_mobility_component"),
@@ -205,7 +226,7 @@ inputs <- expand_grid(
 
 stacked <- pmap_dfr(inputs, npv_fn)
 
-write.xlsx(stacked, str_c(export_path, "Stacked by year.xlsx"))
+saveRDS(stacked, str_c(export_path, "Stacked by year.rds"))
 
 # Summarise total costs
 
@@ -225,45 +246,45 @@ total_costs_stacked <- stacked %>%
            entitlement_in_work,
            cumulative_total)
 
-write.xlsx(total_costs_stacked, str_c(export_path, "Stacked totals.xlsx"))
+saveRDS(total_costs_stacked, str_c(export_path, "Stacked totals.rds"))
 
-
-# Testing 
-
-test <- (minimum_wage - income_tax_allowance)*0.2 +
-  (minimum_wage - ni_allowance)*0.08 +
-  (minimum_wage - employer_ni_allowance)*(3/17)
-
-years_t <-  tibble(year = seq(1, (67-1-25), 1))
-
-yearly_stay_rate_t <- tibble(stay_probability = c(0.92, 0.96, 0.98, 0.99, rep(0.99, 37)))
-
-build_t <- years_t %>% 
-  bind_cols(cumprod(yearly_stay_rate_t)) %>% 
-  mutate(year = year + 25)
-
-test_plot <-  ggplot(stacked %>% 
-                     filter(start_age == 25,
-                            uc_standard_input == 4802,
-                            lcwra_input == 5079,
-                            housing_input == 6968,
-                            pip_input == 7166,
-                            probabilities == "0.89, 0.89, 0.89, 0.89",
-                            counterfactual_wage == "Minimum wage",
-                            discount_rate == 0.035,
-                            inflation_rate == 0.02) %>% 
-                     select(age,
-                            `Cumulative Welfare` = cumulative_benefits,
-                            `Cumulative Tax Loss` = cumulative_tax,
-                            `Total` = cumulative_total) %>% 
-                     pivot_longer(cols = -age),
-                   aes(x = age, y = value, group = name, colour = name)) +
-  geom_point() +
-  geom_line() +
-  scale_y_continuous(breaks = pretty_breaks(n = 6)) +
-labs(x = "", y = "") 
-
-test_plot
+# 
+# # Testing 
+# 
+# test <- (minimum_wage - income_tax_allowance)*0.2 +
+#   (minimum_wage - ni_allowance)*0.08 +
+#   (minimum_wage - employer_ni_allowance)*(3/17)
+# 
+# years_t <-  tibble(year = seq(1, (67-1-25), 1))
+# 
+# yearly_stay_rate_t <- tibble(stay_probability = c(0.92, 0.96, 0.98, 0.99, rep(0.99, 37)))
+# 
+# build_t <- years_t %>% 
+#   bind_cols(cumprod(yearly_stay_rate_t)) %>% 
+#   mutate(year = year + 25)
+# 
+# test_plot <-  ggplot(stacked %>% 
+#                      filter(start_age == 25,
+#                             uc_standard_input == 4802,
+#                             lcwra_input == 5079,
+#                             housing_input == 6968,
+#                             pip_input == 7166,
+#                             probabilities == "0.89, 0.89, 0.89, 0.89",
+#                             counterfactual_wage == "Minimum wage",
+#                             discount_rate == 0.035,
+#                             inflation_rate == 0.02) %>% 
+#                      select(age,
+#                             `Cumulative Welfare` = cumulative_benefits,
+#                             `Cumulative Tax Loss` = cumulative_tax,
+#                             `Total` = cumulative_total) %>% 
+#                      pivot_longer(cols = -age),
+#                    aes(x = age, y = value, group = name, colour = name)) +
+#   geom_point() +
+#   geom_line() +
+#   scale_y_continuous(breaks = pretty_breaks(n = 6)) +
+# labs(x = "", y = "") 
+# 
+# test_plot
   
 
 # Old manual inputs 

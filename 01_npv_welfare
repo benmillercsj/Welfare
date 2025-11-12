@@ -61,6 +61,8 @@ median_wage_by_age <- tibble(age = seq(22, 66, 1)) %>%
 
 # Set objects
 
+dwp_pathways_to_work_lcw <- c(sqrt(16900/21700), sqrt(16900/21700), sqrt(16900/21700), sqrt(16900/21700))
+dwp_pathways_to_work_lcwra <- c(sqrt(75700/85600), sqrt(75700/85600), sqrt(75700/85600), sqrt(75700/85600))
 income_tax_allowance <- 12571
 income_tax_rate <- 0.2
 ni_allowance <- 1048*12
@@ -68,9 +70,9 @@ ni_rate <- 0.08
 employer_ni_allowance <- 417*12
 minimum_wage <- 12.21*36.5*52
 half_time_minimum_wage <- 12.21*36.5*52*0.5
-uc_standard <- 400.14*12
-lcw <- 158.76*12
-lcwra <- 423.27*12
+uc_standard <- 424.49*12
+lcw <- 0
+lcwra <- 217.26*12
 disabled_median_salary <- 13.69*32.5*52 # 2023. Disabled workers work on average 4 hours less per week
 half_time_disabled_median_salary <- 13.69*32.5*52*0.5 
 median_annual_salary <- 39039 # Full time workers, ASHE 2025
@@ -105,14 +107,20 @@ no_housing_allowance <- 0
 #counterfactual_wage <- "minimum_wage"
 
 npv_fn <- function(start_age,
-                   probabilities,
+                   probabilities_input,
                    counterfactual_wage,
                    lcw_input, housing_input, pip_input,
                    entitlement_in_work) {
 
 # Define values and names
   
-wage_name <- str_c(str_replace_all(str_to_sentence(counterfactual_wage), "_", " "), " (", pound_format(wage), ")")
+probabilities <- get(probabilities_input)
+
+if (probabilities_input == "dwp_pathways_to_work_lcw") {
+  probabilities_name <- "DWP Pathways to Work, LCW (88% per year)"
+} else if (probabilities_input == "dwp_pathways_to_work_lcwra") {
+  probabilities_name <- "DWP Pathways to Work, LCWRA (94% per year)"
+}
 
 lcw <- get(lcw_input)
 lcw_name <- str_c(str_to_upper(lcw_input), " (", pound_format(lcw), ")")
@@ -132,47 +140,61 @@ total_benefits <- uc_standard + lcw + housing + pip
 if (entitlement_in_work == "No in-work entitlement") {
   in_work_benefits <- 0
   work_allowance <- 0
+  in_work_pip <- 0
 } else if (entitlement_in_work == "UC Standard") {
   in_work_benefits <- uc_standard
   work_allowance <- 0
+  in_work_pip <- 0
 } else if (entitlement_in_work == "UC Standard, LCW(RA)") {
   in_work_benefits <- uc_standard + lcw
   work_allowance <- 0
+  in_work_pip <- 0
 } else if (entitlement_in_work == "UC Standard, LCW(RA), Housing") {
   in_work_benefits <- uc_standard + lcw + housing
   work_allowance <- 0
+  in_work_pip <- 0
 } else if (entitlement_in_work == "UC Standard, LCW(RA), Housing, PIP") {
-  in_work_benefits <- uc_standard + lcw + housing + pip
+  in_work_benefits <- uc_standard + lcw + housing
   work_allowance <- 411*12
+  in_work_pip <- pip
 } else if (entitlement_in_work == "UC Standard, Housing") {
   in_work_benefits <- uc_standard + housing 
   work_allowance <- 0
+  in_work_pip <- 0
 } else if (entitlement_in_work == "UC Standard, PIP") {
-  in_work_benefits <- uc_standard + pip
+  in_work_benefits <- uc_standard
   work_allowance <- 684*12
+  in_work_pip <- pip
 } else if (entitlement_in_work == "UC Standard, LCW(RA), PIP") {
-  in_work_benefits <- uc_standard + lcw + pip
+  in_work_benefits <- uc_standard + lcw
   work_allowance <- 684*12
+  in_work_pip <- pip
+} else if (entitlement_in_work == "UC Standard, Housing, PIP") {
+  in_work_benefits <- uc_standard + housing
+  work_allowance <- 684*12
+  in_work_pip <- pip
+} else if (entitlement_in_work == "PIP") {
+  in_work_benefits <- 0
+  work_allowance <- 684*12
+  in_work_pip <- pip
 }
 
 # Create df of ages and wages
 
 if (counterfactual_wage != "median_wage_by_age") {
   wage_value <- get(counterfactual_wage)
-  wage_name <- str_c(str_replace_all(str_to_sentence(counterfactual_wage), "_", " "), " (", pound_format(wage), ")")
+  wage_name <- str_c(str_replace_all(str_to_sentence(counterfactual_wage), "_", " "), " (", pound_format(wage_value), ")")
   wage_df <- tibble(age = seq(25, 66, 1)) %>% 
     mutate(wage = wage_value)
 } else {
-  wage_name <- "Median Wage by Age Group"
+  wage_name <- "Median annual salary by age group (ASHE 2025)"
   wage_df <- median_wage_by_age
 }
 
 wages_and_losses <- wage_df %>% 
   mutate(tax_loss = (wage - income_tax_allowance)*0.2 + (wage - ni_allowance)*0.08 + (wage - employer_ni_allowance)*(3/17),
          net_wage = wage - ((wage - income_tax_allowance)*0.2 + (wage - ni_allowance)*0.08),
-         remaining_in_work_benefits = ifelse(in_work_benefits - (net_wage - work_allowance)*0.55 < 0,
-                                              0,
-                                              in_work_benefits - (net_wage - work_allowance)*0.55),
+         remaining_in_work_benefits = pmax(in_work_benefits - (net_wage - work_allowance)*0.55, 0) + in_work_pip, 
          tax_loss_net_in_work_benefit = ifelse(tax_loss - remaining_in_work_benefits < 0,
                                                 0,
                                                 tax_loss - remaining_in_work_benefits))
@@ -198,12 +220,14 @@ build <- years %>%
          in_work_benefits_adj = (remaining_in_work_benefits)*inflation_multiplier*probability*discount,
          tax_loss_net_in_work_benefit_adj = (tax_loss_net_in_work_benefit)*inflation_multiplier*probability*discount,
          total_loss_adj = (total_benefits + tax_loss_net_in_work_benefit)*inflation_multiplier*probability*discount,
+         loss_to_individual = ((net_wage + remaining_in_work_benefits) - total_benefits)*inflation_multiplier*probability*discount,
          cumulative_benefits = cumsum(loss_benefits_adj),
          cumulative_tax = cumsum(loss_tax_adj),
          cumulative_in_work_benefit = cumsum(in_work_benefits_adj),
          cumulative_tax_loss_net_in_work_benefit = cumsum(tax_loss_net_in_work_benefit_adj),
          cumulative_total = cumsum(total_loss_adj),
-         probabilities = str_c(round(probabilities[1], 2), round(probabilities[2], 2), round(probabilities[3], 2), round(probabilities[4], 2), sep = ", "),
+         cumulative_loss_to_individual = cumsum(loss_to_individual), 
+         probabilities = probabilities_name,
          counterfactual_wage = wage_name,
          lcw_input = lcw_name,
          housing_input = housing_name,
@@ -214,14 +238,14 @@ build <- years %>%
 
 inputs <- expand_grid(
   start_age = c(seq(25, 60, 5)),
-  probabilities = list(c(0.92, 0.96, 0.98, 0.99), c(0.99^12, 0.99^12, 0.99^12, 0.99^12)),
+  probabilities_input = c("dwp_pathways_to_work_lcw", "dwp_pathways_to_work_lcwra"),
   counterfactual_wage = c("minimum_wage", "half_time_minimum_wage", "disabled_median_salary", "half_time_disabled_median_salary",
                           "median_annual_salary", "median_part_time_annual_salary", "median_wage_by_age"),
   lcw_input = c("lcw", "lcwra"),
   housing_input = c("no_housing_allowance", "average_housing_allowance", "average_london_housing_allowance", "average_non_london_housing_allowance"),
   pip_input = c("no_pip", "basic_pip_with_no_mobility_component", "enhanced_pip_with_no_mobility_component", "basic_pip_with_basic_mobility_component", "basic_pip_with_enhanced_mobility_component", "enhanced_pip_with_basic_mobility_component", "enhanced_pip_with_enhanced_mobility_component"),
-  entitlement_in_work = c("No in-work entitlement", "UC Standard", "UC Standard, LCW(RA)", "UC Standard, LCW(RA), Housing",
-                          "UC Standard, LCW(RA), Housing, PIP", "UC Standard, Housing", "UC Standard, PIP", "UC Standard, LCW(RA), PIP")
+  entitlement_in_work = c("No in-work entitlement", "UC Standard", "UC Standard, LCW(RA)", "UC Standard, LCW(RA), Housing", "UC Standard, LCW(RA), PIP",
+                          "UC Standard, LCW(RA), Housing, PIP", "UC Standard, Housing", "UC Standard, Housing, PIP", "UC Standard, PIP", "PIP")
 )
 
 stacked <- pmap_dfr(inputs, npv_fn)
@@ -244,96 +268,12 @@ total_costs_stacked <- stacked %>%
            counterfactual_wage,
            lcw_input, housing_input, pip_input,
            entitlement_in_work,
-           cumulative_total)
+           cumulative_total, cumulative_loss_to_individual)
 
 saveRDS(total_costs_stacked, str_c(export_path, "Stacked totals.rds"))
 
-# 
-# # Testing 
-# 
-# test <- (minimum_wage - income_tax_allowance)*0.2 +
-#   (minimum_wage - ni_allowance)*0.08 +
-#   (minimum_wage - employer_ni_allowance)*(3/17)
-# 
-# years_t <-  tibble(year = seq(1, (67-1-25), 1))
-# 
-# yearly_stay_rate_t <- tibble(stay_probability = c(0.92, 0.96, 0.98, 0.99, rep(0.99, 37)))
-# 
-# build_t <- years_t %>% 
-#   bind_cols(cumprod(yearly_stay_rate_t)) %>% 
-#   mutate(year = year + 25)
-# 
-# test_plot <-  ggplot(stacked %>% 
-#                      filter(start_age == 25,
-#                             uc_standard_input == 4802,
-#                             lcwra_input == 5079,
-#                             housing_input == 6968,
-#                             pip_input == 7166,
-#                             probabilities == "0.89, 0.89, 0.89, 0.89",
-#                             counterfactual_wage == "Minimum wage",
-#                             discount_rate == 0.035,
-#                             inflation_rate == 0.02) %>% 
-#                      select(age,
-#                             `Cumulative Welfare` = cumulative_benefits,
-#                             `Cumulative Tax Loss` = cumulative_tax,
-#                             `Total` = cumulative_total) %>% 
-#                      pivot_longer(cols = -age),
-#                    aes(x = age, y = value, group = name, colour = name)) +
-#   geom_point() +
-#   geom_line() +
-#   scale_y_continuous(breaks = pretty_breaks(n = 6)) +
-# labs(x = "", y = "") 
-# 
-# test_plot
-  
 
-# Old manual inputs 
 
-# bm_costs <- npv_fn(name = "BM Inputs", start_age = 25, probabilities = c(0.92, 0.96, 0.98, 0.99),
-#                    counterfactual_wage = minimum_wage, discount_rate = 0.035, 
-#                    inflation_rate = 0.02, uc_standard_input = 4802,
-#                    lcwra_input = 5079, housing_input = 6968, pip_input = 7166)
-# fn_costs <- npv_fn("FN Inputs", 25, 
-#                    c(0.92, 0.96, 0.98, 0.99),
-#                    minimum_wage, 0.035, 0.02, 4802, 5079, 535*12, 110.4*52)
+# Comparison to old version
 
-# inputs <- tibble(
-#   name = c("Base, Basic PIP", "Enhanced PIP"),
-#   start_age = c(25, 25, 25),
-#   probabilities = list(c(0.92, 0.96, 0.98, 0.99), c(0.92, 0.96, 0.98, 0.99)),
-#   counterfactual_wage = c("minimum_wage", "half_minimum_wage", "disabled_median_salary", "half_disabled_median_salary"),
-#   discount_rate = c(0.035, 0.035),
-#   inflation_rate = c(0.02, 0.02),
-#   uc_standard_input = c(4802, 4802),
-#   lcwra_input = c(5079, 5079),
-#   housing_input = c(6968, 6968),
-#   pip_input = c("basic_pip", "enhanced_pip")
-# )
-
-# fn_costs_2disc <- npv_fn("FN Inputs, 2% discount", 25,
-#                          c(0.92, 0.96, 0.98, 0.99),
-#                          minimum_wage, 0.02, 0.02, 4802, 5079, 535*12, 110.4*52)
-# bm_costs_part_time <- npv_fn("BM Inputs, half-time work", 25,
-#                              c(0.92, 0.96, 0.98, 0.99),
-#                              minimum_wage*0.5, 0.035, 0.02, 4802, 5079, 6968, 7166)
-# bm_costs_month_probs <- npv_fn("BM Inputs, 1% per month", 25,
-#                                probabilities = c(0.99^12, 0.99^12, 0.99^12, 0.99^12),
-#                                minimum_wage, 0.035, 0.02, 4802, 5079, 6968, 7166)
-# bm_costs_month_probs_part_time <- npv_fn("BM Inputs, 1% per month, half-time work", 25,
-#                                          probabilities = c(0.99^12, 0.99^12, 0.99^12, 0.99^12),
-#                                          minimum_wage*0.5, 0.035, 0.02, 4802, 5079, 6968, 7166)
-# bm_costs_month_probs_part_time_2disc <- npv_fn("BM Inputs, 1% per month, half-time work, 2% disc", 25,
-#                                                probabilities = c(0.99^12, 0.99^12, 0.99^12, 0.99^12),
-#                                                minimum_wage*0.5, 0.02, 0.02, 4802, 5079, 6968, 7166)
-# bm_costs_month_probs_part_time_4.5disc <- npv_fn("BM Inputs, 1% per month, half-time work, gov bond disc", 25,
-#                                                  probabilities = c(0.99^12, 0.99^12, 0.99^12, 0.99^12),
-#                                                  minimum_wage*0.5, 0.045, 0.02, 4802, 5079, 6968, 7166)
-# bm_costs_month_probs_disabledsal <- npv_fn("BM Inputs, 1% per month, median disabled salary", 25,
-#                                            probabilities = c(0.99^12, 0.99^12, 0.99^12, 0.99^12),
-#                                            disabled_median_salary, 0.035, 0.02, 4802, 5079, 6968, average_pip)
-# 
-# 
-# stacked <- bind_rows(bm_costs, fn_costs, fn_costs_2disc,
-#                      bm_costs_part_time, bm_costs_month_probs, bm_costs_month_probs_part_time, 
-#                      bm_costs_month_probs_part_time_2disc, bm_costs_month_probs_part_time_4.5disc,
-#                      bm_costs_month_probs_disabledsal)
+old <- readRDS("C:/Users/BenMiller/OneDrive - Centre for Social Justice/Documents/repos/welfare/analysis/_archive/2025.11.05 1350/Stacked by year.rds")

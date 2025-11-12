@@ -31,8 +31,8 @@ pound_format <- label_number(prefix = "£", big.mark = ",", accuracy = 1)
 
 # Import data
 
-stacked_by_year <- read_excel("data/Stacked by year.xlsx")
-stacked_totals <- read_excel("data/Stacked totals.xlsx")
+stacked_by_year <- readRDS("data/Stacked by year.rds")
+stacked_totals <- readRDS("data/Stacked totals.rds")
 
 ui <- fluidPage(
   titlePanel("Expected Lifetime Fiscal Cost Calculator"),
@@ -44,16 +44,16 @@ ui <- fluidPage(
                   choices = unique(stacked_totals$start_age), selected = 25),
       
       selectInput("lcw_input", "LCW/LCWRA:",
-                  choices = unique(stacked_totals$lcw_input), selected = "LCWRA (£5,079)"),
-      
-      selectInput("housing_input", "Annual Housing:",
-                  choices = unique(stacked_totals$housing_input), selected = "Average housing allowance (£5,048)"),
+                  choices = unique(stacked_totals$lcw_input), selected = "LCWRA (£2,607)"),
       
       selectInput("pip_input", "Annual PIP:",
                   choices = unique(stacked_totals$pip_input), selected = "Basic PIP with no mobility component (£3,843)"),
       
-      selectInput("probabilities", "Probabilities (Retention Rates Years 1, 2, 3, 4+):",
-                  choices = unique(stacked_totals$probabilities), selected = "0.92, 0.96, 0.98, 0.99"),
+      selectInput("housing_input", "Annual Housing:",
+                  choices = unique(stacked_totals$housing_input), selected = "Average housing allowance (£5,048)"),
+      
+      selectInput("probabilities", "Retention Rate:",
+                  choices = unique(stacked_totals$probabilities), selected = "DWP Pathways to Work, LCWRA (94% per year)"),
       
       selectInput("counterfactual_wage", "Counterfactual Salary:",
                   choices = unique(stacked_totals$counterfactual_wage), selected = "Minimum wage (£23,175)"),
@@ -85,7 +85,8 @@ server <- function(input, output) {
                        probabilities == input$probabilities,
                        counterfactual_wage == input$counterfactual_wage,
                        entitlement_in_work == input$entitlement_in_work) %>% 
-                transmute(`Expected Lifetime Cost` = paste0("£", format(cumulative_total, big.mark = ",", nsmall = 0))),
+                transmute(`Expected Lifetime Fiscal Cost` = paste0("£", format(cumulative_total, big.mark = ",", nsmall = 0)),
+                          `Expected Working-Age Income Loss to Individual` = paste0("£", format(cumulative_loss_to_individual, big.mark = ",", nsmall = 0))),
               options = list(pageLength = 1))
   })
   
@@ -152,7 +153,8 @@ server <- function(input, output) {
                           `Cumulative Tax Loss` = pound_format(cumulative_tax),
                           `Cumulative In-Work Welfare` = pound_format(cumulative_in_work_benefit),
                           `Cumulative Tax Loss Net In-Work Welfare` = pound_format(cumulative_tax_loss_net_in_work_benefit),
-                          `Cumulative Total` = pound_format(cumulative_total))
+                          `Cumulative Total Fiscal Cost` = pound_format(cumulative_total),
+                          `Cumulative Income Loss to Individual` = pound_format(cumulative_loss_to_individual))
               , options = list(pageLength = 42))
   })
 }

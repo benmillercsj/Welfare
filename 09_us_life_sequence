@@ -1,0 +1,616 @@
+# Clear global environment
+
+rm(list = ls())
+
+# Load packages and set working directories
+
+library(ggplot2)
+library(stringr)
+library(readr)
+library(readxl)
+library(tidyr)
+library(dplyr)
+library(janitor)
+library(dataCompareR)
+library(grid)
+library(sf)
+library(ggbreak)
+library(glue)
+library(purrr)
+library(openxlsx)
+library(scales)
+library(ggbeeswarm)
+library(shiny)
+library(ggplot2)
+library(DT) 
+library(rsconnect)
+library(scales)
+#library(sandwich)    # robust SEs
+#library(lmtest)      # coeftest
+
+
+# Load in functions
+
+setwd("C:/Users/BenMiller/OneDrive - Centre for Social Justice/Documents/repos/welfare/functions")
+source("theme_csj.R")
+
+'%!in%' = Negate("%in%")
+pound_format <- label_number(prefix = "£", big.mark = ",", accuracy = 1)
+
+# Set wd and paths
+
+setwd("C:/Users/BenMiller/OneDrive - Centre for Social Justice/Documents/R/welfare/data")
+import_path <- "C:/Users/BenMiller/OneDrive - Centre for Social Justice/Documents/R/welfare/data/import/Understanding Society Wave 15/UKDA-6614-tab/tab/ukhls"
+export_path <- "C:/Users/BenMiller/OneDrive - Centre for Social Justice/Documents/R/welfare/data/export/"
+
+
+# =============================================================================
+# SUCCESS SEQUENCE REPLICATION — Understanding Society (UKHLS) Waves 1–15
+# =============================================================================
+# Replicates the Sawhill/Venator "Success Sequence" approach:
+#   1. Finish education
+#   2. Work full-time
+#   3. Marry (or cohabit — toggle below)
+#   4. Have first child
+# Outcome: equivalised net household income; poverty rate
+#
+# Panel approach: follow a birth cohort prospectively across waves,
+# observing the timing of each milestone in real time.
+#
+# Data source: UK Data Service, Understanding Society (SN 6614)
+# Required files per wave: indresp, hhresp (and child file for fertility)
+
+# Birth cohort: people born in these years will be your analytic sample.
+# They should be young enough to have all milestones potentially observable,
+# and old enough that most have passed through the sequence by the end of data.
+# Waves cover roughly 2009–2024 (wave 1 fieldwork 2009–2011).
+# Born 1980–1993 means they are ~16–29 at wave 1 and ~31–44 at wave 15.
+BIRTH_COHORT_MIN <- 1980
+BIRTH_COHORT_MAX <- 1993
+
+# Minimum age at which we start looking for sequence events
+SEQUENCE_START_AGE <- 16
+
+# Age at which we "score" the sequence (must have left education by then)
+OUTCOME_AGE_MIN <- 28
+OUTCOME_AGE_MAX <- 34
+
+# Include cohabitation as equivalent to marriage? (TRUE = yes)
+INCLUDE_COHABITATION <- FALSE
+
+# Wave letters a–o for waves 1–15
+WAVE_LETTERS <- letters[2:15]
+
+# Education: what counts as "completed"?
+# hiqual_dv codes: 1=Degree, 2=Other higher, 3=A-level, 4=GCSE, 5=Other,
+#                  9=No qual; feend = age left full-time education
+# We define "completed" as having left full-time education (feend is observed)
+# AND having at least some qualification (hiqual_dv < 9)
+# You can tighten this to degree-level (hiqual_dv <= 2) if preferred.
+ED_COMPLETE_QUAL_MAX <- 8   # hiqual_dv <= this value => has a qualification
+
+# Cross wave data
+
+xwave_import <- read.delim(str_c(import_path, "/xwavedat.tab")) %>% 
+  select(pidp, year_first_married = lmar1y_dv, year_first_child = ch1by_dv) %>% 
+  mutate(across(where(is.numeric), ~ ifelse(. < 0, NA_real_, .)))
+
+
+# -----------------------------------------------------------------------------
+# 1. LOAD AND STACK ALL WAVES
+# -----------------------------------------------------------------------------
+# We extract a minimal set of variables from each wave's indresp and hhresp,
+# then row-bind into one long panel dataset.
+
+load_wave <- function(wave_letter) {
+  
+  prefix <- wave_letter
+  ind_path  <- file.path(import_path, paste0(prefix, "_indresp.tab"))
+  hh_path   <- file.path(import_path, paste0(prefix, "_hhresp.tab"))
+  
+  message("Loading wave ", toupper(wave_letter), "...")
+  
+  # --- Individual file ---
+  ind_vars <- c(
+    "pidp",            # permanent person ID (time-stable)
+    paste0(prefix, "_hidp"),          # household ID this wave
+    paste0(prefix, "_intdaty_dv"),    # interview year
+    paste0(prefix, "_intdatm_dv"),    # interview month
+    paste0(prefix, "_birthy"),        # birth year
+    paste0(prefix, "_sex_dv"),        # sex
+    paste0(prefix, "_age_dv"),        # age at interview
+    paste0(prefix, "_racel_dv"),      # ethnicity
+    paste0(prefix, "_gor_dv"),        # government office region
+    paste0(prefix, "_jbstat"),        # labour force status
+    paste0(prefix, "_jbbgy"),        # year started current job
+    paste0(prefix, "_mastat_dv"),     # marital/cohabitation status
+    paste0(prefix, "_lmar1y_dv"),     # year of marriage
+    paste0(prefix, "_nchild_dv"),     # number of own children in HH
+    paste0(prefix, "_hiqual_dv"),     # highest qualification
+    paste0(prefix, "_feend"),         # age left full-time education
+    paste0(prefix, "_indinus_xw"),    # cross-sectional weight
+    paste0(prefix, "_indpxus_xw"),    # longitudinal weight
+    # Parental education (wave 1 only, but include for merging)
+    paste0(prefix, "_paedqf"),        # father's education
+    paste0(prefix, "_maedqf")         # mother's education
+  )
+  
+  ind_raw <- read_delim(ind_path) %>%
+    select(any_of(ind_vars))
+  
+  
+  # Standardise column names (strip wave prefix)
+  names(ind_raw) <- gsub(paste0("^", prefix, "_"), "", names(ind_raw))
+  ind_raw$wave   <- wave_letter
+  ind_raw$wave_n <- which(WAVE_LETTERS == wave_letter)
+  
+  # --- Household file (for poverty line) ---
+  hh_vars <- c(
+    paste0(prefix, "_hidp"),
+    paste0(prefix, "_fihhmnlabnet_dv"),    # net hh labour income
+    paste0(prefix, "_ieqmoecd_dv"),   # OECD scale
+    paste0(prefix, "_hhsize")
+  )
+  
+  hh_raw <- read_delim(hh_path) %>%
+    select(any_of(hh_vars))
+  names(hh_raw) <- gsub(paste0("^", prefix, "_"), "", names(hh_raw))
+  
+  # Merge
+  combined <- ind_raw %>%
+    left_join(hh_raw, by = "hidp")
+  
+  return(combined)
+}
+
+# Load all waves and stack
+panel_raw <- map_dfr(WAVE_LETTERS, load_wave)
+
+
+
+# -----------------------------------------------------------------------------
+# 2. CLEAN AND RECODE
+# -----------------------------------------------------------------------------
+
+panel <- panel_raw %>%
+  mutate(
+    # Recode negatives (UKHLS uses -1 = missing, -2 = inapplicable, etc.)
+    across(where(is.numeric), ~ ifelse(. < 0, NA_real_, .)),
+    
+    # --- Employment: full-time work ---
+    # jbstat: 1 = self-employed, 2 = employed; jbft_dv would be cleaner if
+    # available, but jbstat 1 or 2 captures any employment; filter on hours
+    # via jbhrs if you want strict full-time (>= 30 hrs). Here we use
+    # jbstat %in% 1:2 as a broad "in work" flag; adjust if needed.
+    employed_ft = case_when(
+      jbstat %in% c(1, 2, 5, 11, 14, 15) ~ 1L,
+      jbstat %!in% c(3, 4, 6, 7, 8, 9, 10, 12, 13, 97) ~ 0L,
+      TRUE                ~ NA_integer_
+    ),
+    
+    # --- Partnership ---
+    # mastat_dv: 1=married, 2=civil partner, 3=separated, 4=divorced,
+    #            5=widowed, 6=never married, 10=cohabiting
+    married = case_when(
+      mastat_dv %in% c(1, 2)                                    ~ 1L,
+      INCLUDE_COHABITATION & mastat_dv == 10                    ~ 1L,
+      mastat_dv %in% c(3:6, if (!INCLUDE_COHABITATION) 10)      ~ 0L,
+      TRUE                                                       ~ NA_integer_
+    ),
+    
+    # --- Children ---
+    has_child = case_when(
+      nchild_dv >= 1 ~ 1L,
+      nchild_dv == 0 ~ 0L,
+      TRUE           ~ NA_integer_
+    ),
+    
+    # --- Education complete ---
+    # Person is "education complete" if they have left FT education
+    # (feend is non-missing and > 0) AND have a qualification
+    # ed_complete = case_when(
+    #   !is.na(feend_filled) & feend_filled > 0 & hiqual_dv <= ED_COMPLETE_QUAL_MAX ~ 1L,
+    #   !is.na(feend_filled) & feend_filled > 0 & hiqual_dv == 9                    ~ 0L,
+    #   TRUE                                                            ~ NA_integer_
+    # ),
+    # 
+    # Parental education: collapse to degree vs not
+    par_ed_degree = case_when(
+      paedqf %in% c(1, 2) | maedqf %in% c(1, 2) ~ 1L,   # at least one parent degree
+      !is.na(paedqf) | !is.na(maedqf)            ~ 0L,
+      TRUE                                        ~ NA_integer_
+    ),
+    
+    # Equivalised income (real terms — deflate to a base year if needed)
+    # ieqmoecd_dv is already equivalised monthly net income in nominal £
+    hh_adjusted_income = fihhmnlabnet_dv/ieqmoecd_dv,
+    log_income   = log(pmax(hh_adjusted_income, 1)),  # floor at £1 to avoid -Inf
+    
+    # Interview year for time-ordering
+    year = intdaty_dv
+  )
+
+
+# -----------------------------------------------------------------------------
+# 3. RESTRICT TO BIRTH COHORT
+# -----------------------------------------------------------------------------
+
+cohort <- panel %>%
+  filter(
+    birthy >= BIRTH_COHORT_MIN,
+    birthy <= BIRTH_COHORT_MAX
+  )
+
+# -----------------------------------------------------------------------------
+# 4. IDENTIFY FIRST OCCURRENCE OF EACH MILESTONE (per person)
+# -----------------------------------------------------------------------------
+# Strategy: for each person, find the first wave in which each milestone
+# is observed as TRUE (1). We record the age at which this happens.
+# "First ever" is safer than wave number because people re-enter the panel.
+
+# first_event <- function(df, var, label) {
+#   df %>%
+#     filter(!!sym(var) == 1L, age_dv >= SEQUENCE_START_AGE) %>%
+#     group_by(pidp) %>%
+#     slice_min(wave_n, n = 1, with_ties = FALSE) %>%
+#     ungroup() %>%
+#     select(pidp,
+#            !!paste0("age_first_", label) := age_dv,
+#            !!paste0("wave_first_", label) := wave_n)
+# }
+
+characteristics <- cohort %>%
+  # Parental education is wave-specific but mostly consistent; take wave 1
+  group_by(pidp) %>%
+  mutate(
+    par_ed_degree = first(par_ed_degree[wave_n == min(wave_n)]),
+    birthy        = first(birthy),
+    sex_dv        = first(sex_dv),
+    racel_dv      = first(racel_dv),
+    gor_dv        = first(gor_dv)
+  ) %>%
+  ungroup()
+
+work_first     <- first_event(milestones, "employed_ft",  "work")
+partner_first  <- first_event(milestones, "married",      "partner")
+child_first    <- first_event(milestones, "has_child",    "child")
+
+end_ed <- panel_raw %>%
+  distinct(pidp, hiqual_dv, feend) %>% 
+  mutate(across(where(is.numeric), ~ ifelse(. < 0, NA_real_, .))) %>% 
+  group_by(pidp) %>% 
+  summarise(hiqual_dv = min(hiqual_dv, na.rm =  T),
+            feend = max(feend, na.rm =  T)) %>% 
+  ungroup() %>% 
+  filter(!is.infinite(feend))
+  
+age_jobs <- panel %>% 
+  filter(!is.na(jbbgy) & employed_ft == 1) %>% 
+  distinct(pidp, birthy, jbbgy) %>% 
+  mutate(age_at_job_start = jbbgy - birthy) %>% 
+  group_by(pidp) %>% 
+  arrange(age_at_job_start) %>% 
+  filter(age_at_job_start >= 14) %>% 
+  mutate(job_no = str_c("job_number_", row_number())) %>% 
+  pivot_wider(names_from = job_no, values_from = age_at_job_start) %>% 
+  mutate(across(starts_with("job_number_"), ~zoo::na.locf(., na.rm = FALSE))) %>% 
+  mutate(row = row_number(),
+         max_row = max(row)) %>% 
+  ungroup() %>% 
+  filter(row == max_row) %>% 
+  select(-row, -max_row, -birthy, -jbbgy)
+
+# Combine milestones with baseline person-level info
+person_info <- milestones %>%
+  distinct(pidp, birthy, sex_dv, racel_dv, gor_dv, par_ed_degree) %>%
+  group_by(pidp) %>%
+  slice(1) %>%
+  ungroup()
+
+milestone_df <- person_info %>%
+  left_join(ed_first,      by = "pidp") %>%
+  left_join(work_first,    by = "pidp") %>%
+  left_join(partner_first, by = "pidp") %>%
+  left_join(child_first,   by = "pidp")
+
+
+# -----------------------------------------------------------------------------
+# 5. CLASSIFY SEQUENCE GROUPS
+# -----------------------------------------------------------------------------
+# Rules (applied to people who have children — childless are a separate group):
+#
+#   ON SEQUENCE:          ed before (or same age as) work,
+#                         work before (or same age as) partner,
+#                         partner before (or same age as) child
+#                         — and has a qualification
+#
+#   CHILD BEFORE PARTNER: has a child; child arrived before partnership
+#
+#   PARTNER BEFORE WORK:  has a child; partnered but child arrived before
+#                         ever working full-time
+#
+#   NO QUALIFICATION:     left education without a qualification (regardless
+#                         of subsequent sequence)
+#
+#   PARTIAL/OTHER:        education done and working, but no child yet /
+#                         other orderings
+#
+#   NO CHILD:             no child observed in the panel (separate group)
+
+sequence_df <- milestone_df %>%
+  mutate(
+    has_child_ever   = !is.na(age_first_child),
+    has_partner_ever = !is.na(age_first_partner),
+    has_work_ever    = !is.na(age_first_work),
+    has_ed_ever      = !is.na(age_first_ed),
+    
+    sequence_group = {
+      # Build a named vector of ages for each observed milestone
+      # then sort by age and paste the labels together
+      pmap_chr(
+        list(age_first_ed, age_first_work, age_first_partner, age_first_child),
+        function(ed, work, partner, child) {
+          events <- c(
+            "Education"  = ed,
+            "Employment" = work,
+            "Marriage"   = partner,
+            "Child"      = child
+          )
+          # Drop milestones never observed
+          events <- events[!is.na(events)]
+          
+          if (length(events) == 0) return("No milestones observed")
+          
+          # Sort by age; where ages are tied, order is arbitrary within tie
+          events_sorted <- sort(events)
+          
+          paste(names(events_sorted), collapse = "; ")
+        }
+      )
+    }
+  )
+
+
+# Summary table on sequence
+
+sequence_su <- sequence_df %>% 
+  group_by(sequence_group) %>% 
+  summarise(n = n()) %>% 
+  ungroup() %>% 
+  mutate(prop = n/sum(n))
+
+# -----------------------------------------------------------------------------
+# 6. ATTACH OUTCOME — INCOME AT OUTCOME AGE
+# -----------------------------------------------------------------------------
+# For each person, take income observed when they are between
+# OUTCOME_AGE_MIN and OUTCOME_AGE_MAX. Average across available waves
+# in that age window to reduce noise.
+
+outcomes <- cohort %>%
+  filter(
+    age_dv >= OUTCOME_AGE_MIN,
+    age_dv <= OUTCOME_AGE_MAX,
+    !is.na(equiv_income),
+    equiv_income > 0
+  ) %>%
+  group_by(pidp) %>%
+  summarise(
+    mean_equiv_income = mean(equiv_income, na.rm = TRUE),
+    mean_log_income   = mean(log_income,   na.rm = TRUE),
+    n_outcome_waves   = n(),
+    # Use the most recent longitudinal weight in the outcome window
+    weight_long       = last(indpxus_xw[order(wave_n)]),
+    weight_cs         = last(indinus_xw[order(wave_n)]),
+    .groups = "drop"
+  )
+
+# Poverty: below 60% of median equivalised income in each wave
+# Compute wave-specific median, flag individuals below threshold
+poverty_flags <- cohort %>%
+  filter(age_dv >= OUTCOME_AGE_MIN, age_dv <= OUTCOME_AGE_MAX,
+         !is.na(equiv_income), equiv_income > 0) %>%
+  group_by(wave_n) %>%
+  mutate(wave_median = median(equiv_income, na.rm = TRUE),
+         poor        = as.integer(equiv_income < 0.6 * wave_median)) %>%
+  ungroup() %>%
+  group_by(pidp) %>%
+  summarise(pct_waves_poor = mean(poor, na.rm = TRUE), .groups = "drop")
+
+outcomes <- outcomes %>%
+  left_join(poverty_flags, by = "pidp")
+
+# Combine everything
+analytic <- milestone_df %>%
+  inner_join(outcomes, by = "pidp") %>%
+  filter(!is.na(sequence_group)) %>%
+  # Relevel: on_sequence is reference category
+  mutate(
+    sequence_group = factor(sequence_group,
+                            levels = c("on_sequence",
+                                       "child_before_partner",
+                                       "child_before_work",
+                                       "partial_sequence",
+                                       "no_qualification",
+                                       "no_child")),
+    female     = as.integer(sex_dv == 2),
+    eth_white  = as.integer(racel_dv == 1),   # white British
+    par_degree = as.integer(par_ed_degree == 1)
+  )
+
+message("\nAnalytic sample N = ", nrow(analytic))
+cat("\n--- Sequence group in analytic sample ---\n")
+print(count(analytic, sequence_group))
+
+
+# -----------------------------------------------------------------------------
+# 7. DESCRIPTIVE STATISTICS BY SEQUENCE GROUP
+# -----------------------------------------------------------------------------
+
+desc_table <- analytic %>%
+  group_by(sequence_group) %>%
+  summarise(
+    n                = n(),
+    mean_income      = mean(mean_equiv_income, na.rm = TRUE),
+    median_income    = median(mean_equiv_income, na.rm = TRUE),
+    pct_poor         = mean(pct_waves_poor, na.rm = TRUE) * 100,
+    pct_female       = mean(female, na.rm = TRUE) * 100,
+    pct_white        = mean(eth_white, na.rm = TRUE) * 100,
+    pct_par_degree   = mean(par_degree, na.rm = TRUE) * 100,
+    .groups = "drop"
+  ) %>%
+  arrange(desc(mean_income))
+
+cat("\n--- Descriptive table ---\n")
+print(desc_table, n = Inf)
+
+
+# -----------------------------------------------------------------------------
+# 8. REGRESSION ANALYSIS
+# -----------------------------------------------------------------------------
+# Model 1: Raw (no controls)
+# Model 2: Controls for sex, ethnicity, parental education, region
+# Model 3: Model 2 + interaction with sex
+
+# Set up survey design object using longitudinal weights
+svy_design <- analytic %>%
+  as_survey_design(weights = weight_long)
+
+# ---- Model 1: Income ~ sequence (unadjusted) --------------------------------
+m1_income <- svyglm(
+  mean_log_income ~ sequence_group,
+  design = svy_design,
+  family = gaussian()
+)
+
+# ---- Model 2: Income ~ sequence + controls ----------------------------------
+m2_income <- svyglm(
+  mean_log_income ~ sequence_group + female + eth_white + par_degree +
+    factor(gor_dv),
+  design = svy_design,
+  family = gaussian()
+)
+
+# ---- Model 3: Poverty (logistic) --------------------------------------------
+# Convert pct_waves_poor to binary (poor in majority of outcome waves)
+analytic <- analytic %>%
+  mutate(ever_poor = as.integer(pct_waves_poor > 0.5))
+
+svy_design2 <- analytic %>%
+  as_survey_design(weights = weight_long)
+
+m3_poverty <- svyglm(
+  ever_poor ~ sequence_group + female + eth_white + par_degree +
+    factor(gor_dv),
+  design = svy_design2,
+  family = quasibinomial()
+)
+
+# ---- Model 4: By sex --------------------------------------------------------
+# Run Model 2 separately for men and women
+m4_men <- svyglm(
+  mean_log_income ~ sequence_group + eth_white + par_degree + factor(gor_dv),
+  design = svy_design %>% filter(female == 0),
+  family = gaussian()
+)
+
+m4_women <- svyglm(
+  mean_log_income ~ sequence_group + eth_white + par_degree + factor(gor_dv),
+  design = svy_design %>% filter(female == 1),
+  family = gaussian()
+)
+
+# --- Print coefficient tables ------------------------------------------------
+cat("\n=== Model 1: Log income ~ sequence (unadjusted) ===\n")
+print(summary(m1_income)$coefficients[1:6, ])
+
+cat("\n=== Model 2: Log income ~ sequence + controls ===\n")
+print(summary(m2_income)$coefficients[1:6, ])
+
+cat("\n=== Model 3: Poverty ~ sequence + controls (logistic) ===\n")
+print(summary(m3_poverty)$coefficients[1:6, ])
+
+cat("\n=== Model 4: Log income ~ sequence (men only) ===\n")
+print(summary(m4_men)$coefficients[1:6, ])
+
+cat("\n=== Model 4: Log income ~ sequence (women only) ===\n")
+print(summary(m4_women)$coefficients[1:6, ])
+
+
+# -----------------------------------------------------------------------------
+# 9. PREDICTED INCOME BY SEQUENCE GROUP (MARGINAL MEANS)
+# -----------------------------------------------------------------------------
+# Back out predicted income at average covariate values
+
+pred_grid <- expand.grid(
+  sequence_group = levels(analytic$sequence_group),
+  female         = mean(analytic$female, na.rm = TRUE),
+  eth_white      = mean(analytic$eth_white, na.rm = TRUE),
+  par_degree     = mean(analytic$par_degree, na.rm = TRUE),
+  gor_dv         = as.integer(names(sort(table(analytic$gor_dv),
+                                         decreasing = TRUE))[1])  # modal region
+)
+
+pred_grid$pred_log_income <- predict(m2_income, newdata = pred_grid,
+                                     type = "response")
+pred_grid$pred_income_gbp <- exp(pred_grid$pred_log_income)
+
+cat("\n--- Predicted monthly equivalised income by sequence group ---\n")
+pred_grid %>%
+  select(sequence_group, pred_income_gbp) %>%
+  arrange(desc(pred_income_gbp)) %>%
+  print()
+
+
+# -----------------------------------------------------------------------------
+# 10. ROBUSTNESS CHECKS
+# -----------------------------------------------------------------------------
+
+# --- 10a: Sensitivity to cohabitation definition ---
+# Re-run the sequence classification excluding cohabitation (marriage only)
+# by reloading with INCLUDE_COHABITATION = FALSE and comparing.
+# (Left as a separate script run; toggle the flag at the top.)
+
+# --- 10b: Attrition check ---
+# Compare characteristics of those with vs without outcome data
+attrition_check <- milestone_df %>%
+  mutate(in_analytic = pidp %in% analytic$pidp) %>%
+  group_by(in_analytic) %>%
+  summarise(
+    n         = n(),
+    pct_female = mean(sex_dv == 2, na.rm = TRUE) * 100,
+    mean_birth_year = mean(birthy, na.rm = TRUE),
+    pct_no_qual = mean(sequence_group == "no_qualification", na.rm = TRUE) * 100,
+    .groups = "drop"
+  )
+
+cat("\n--- Attrition check (in analytic vs dropped) ---\n")
+print(attrition_check)
+
+# --- 10c: Alternative outcome age windows ---
+# You can re-run section 6 with different OUTCOME_AGE_MIN/MAX, e.g. 25–30
+# vs 30–35, to test whether results are age-window sensitive.
+
+# --- 10d: Quantile regression (income distribution, not just mean) ---
+# install.packages("quantreg") if needed
+if (requireNamespace("quantreg", quietly = TRUE)) {
+  library(quantreg)
+  qr_50 <- rq(mean_log_income ~ sequence_group + female + eth_white +
+                par_degree + factor(gor_dv),
+              data = analytic, tau = 0.5, weights = analytic$weight_long)
+  qr_25 <- rq(mean_log_income ~ sequence_group + female + eth_white +
+                par_degree + factor(gor_dv),
+              data = analytic, tau = 0.25, weights = analytic$weight_long)
+  cat("\n=== Quantile regression (median) ===\n")
+  print(summary(qr_50)$coefficients[1:6, ])
+  cat("\n=== Quantile regression (25th pctile) ===\n")
+  print(summary(qr_25)$coefficients[1:6, ])
+}
+
+
+
+
+test_hh <- read_delim(str_c(import_path, "/o_hhresp.tab")) %>% 
+  clean_names() 
+
+test_hh_1 <- test_hh %>% 
+  select(o_ieqmoecd_dv)
